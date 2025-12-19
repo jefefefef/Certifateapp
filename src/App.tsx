@@ -1,6 +1,9 @@
 import React, { useState, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import mammoth from 'mammoth';
+import Docxtemplater from 'docxtemplater';
+import PizZip from 'pizzip';
+import { saveAs } from 'file-saver';
 import { Upload, Download, FileText, FileSpreadsheet, Check, AlertCircle, Eye, Trash2, File } from 'lucide-react';
 
 interface CertificateData {
@@ -16,6 +19,7 @@ interface SavedTemplate {
   id: string;
   name: string;
   html: string;
+  binary: ArrayBuffer;
   placeholders: string[];
   uploadDate: string;
 }
@@ -24,6 +28,7 @@ const CertificateGenerator: React.FC = () => {
   const [data, setData] = useState<CertificateData[]>([]);
   const [docxTemplate, setDocxTemplate] = useState<string>('');
   const [docxHtml, setDocxHtml] = useState<string>('');
+  const [docxBinary, setDocxBinary] = useState<ArrayBuffer | null>(null);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [uploadStatus, setUploadStatus] = useState<UploadStatus>({ docx: false, excel: false });
   const [placeholders, setPlaceholders] = useState<string[]>([]);
@@ -41,9 +46,33 @@ const CertificateGenerator: React.FC = () => {
   React.useEffect(() => {
     const saved = localStorage.getItem('certificateTemplates');
     if (saved) {
-      setSavedTemplates(JSON.parse(saved));
+      const templates = JSON.parse(saved);
+      // Convert base64 back to ArrayBuffer
+      const templatesWithBinary = templates.map((t: any) => ({
+        ...t,
+        binary: base64ToArrayBuffer(t.binary)
+      }));
+      setSavedTemplates(templatesWithBinary);
     }
   }, []);
+
+  const arrayBufferToBase64 = (buffer: ArrayBuffer): string => {
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    for (let i = 0; i < bytes.byteLength; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
+  };
+
+  const base64ToArrayBuffer = (base64: string): ArrayBuffer => {
+    const binaryString = atob(base64);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    return bytes.buffer;
+  };
 
   // Convert Excel serial date to readable date
   const excelDateToJSDate = (serial: number): string => {
@@ -89,17 +118,29 @@ const CertificateGenerator: React.FC = () => {
 
     try {
       const arrayBuffer = await file.arrayBuffer();
-      const result = await mammoth.convertToHtml({ arrayBuffer });
-      const html = result.value;
       
+      // Store the binary for later use
+      setDocxBinary(arrayBuffer);
+      
+      // Convert to HTML for preview only
+      const result = await mammoth.convertToHtml({ arrayBuffer: arrayBuffer.slice(0) });
+      const html = result.value;
       setDocxHtml(html);
       setDocxTemplate(html);
       
+      // Extract placeholders from the DOCX
+      const zip = new PizZip(arrayBuffer);
+      const doc = new Docxtemplater(zip, {
+        paragraphLoop: true,
+        linebreaks: true,
+      });
+      
+      const text = doc.getFullText();
       const placeholderRegex = /\{(\w+)\}|\{\{(\w+)\}\}|\[(\w+)\]/g;
       const found = new Set<string>();
       let match;
       
-      while ((match = placeholderRegex.exec(html)) !== null) {
+      while ((match = placeholderRegex.exec(text)) !== null) {
         const placeholder = match[1] || match[2] || match[3];
         if (placeholder) found.add(placeholder);
       }
@@ -123,17 +164,30 @@ const CertificateGenerator: React.FC = () => {
       return;
     }
 
+    if (!docxBinary) {
+      alert('No template to save');
+      return;
+    }
+
     const newTemplate: SavedTemplate = {
       id: Date.now().toString(),
       name: templateName,
       html: docxHtml,
+      binary: docxBinary,
       placeholders: placeholders,
       uploadDate: new Date().toLocaleDateString()
     };
 
     const updated = [...savedTemplates, newTemplate];
     setSavedTemplates(updated);
-    localStorage.setItem('certificateTemplates', JSON.stringify(updated));
+    
+    // Convert binary to base64 for localStorage
+    const templatesForStorage = updated.map(t => ({
+      ...t,
+      binary: arrayBufferToBase64(t.binary)
+    }));
+    localStorage.setItem('certificateTemplates', JSON.stringify(templatesForStorage));
+    
     setShowSaveDialog(false);
     setSelectedTemplateId(newTemplate.id);
   };
@@ -141,6 +195,7 @@ const CertificateGenerator: React.FC = () => {
   const loadTemplate = (template: SavedTemplate) => {
     setDocxHtml(template.html);
     setDocxTemplate(template.html);
+    setDocxBinary(template.binary);
     setPlaceholders(template.placeholders);
     setUploadStatus(prev => ({ ...prev, docx: true }));
     setSelectedTemplateId(template.id);
@@ -151,11 +206,17 @@ const CertificateGenerator: React.FC = () => {
     
     const updated = savedTemplates.filter(t => t.id !== id);
     setSavedTemplates(updated);
-    localStorage.setItem('certificateTemplates', JSON.stringify(updated));
+    
+    const templatesForStorage = updated.map(t => ({
+      ...t,
+      binary: arrayBufferToBase64(t.binary)
+    }));
+    localStorage.setItem('certificateTemplates', JSON.stringify(templatesForStorage));
     
     if (selectedTemplateId === id) {
       setDocxHtml('');
       setDocxTemplate('');
+      setDocxBinary(null);
       setPlaceholders([]);
       setUploadStatus(prev => ({ ...prev, docx: false }));
       setSelectedTemplateId(null);
@@ -204,47 +265,57 @@ const CertificateGenerator: React.FC = () => {
     return merged;
   };
 
-  const downloadDocx = async (html: string, filename: string) => {
-    // Create a simple DOCX structure
-    const docxContent = `
-      <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
-        <head>
-          <meta charset='utf-8'>
-          <style>
-            body { font-family: 'Times New Roman', serif; }
-          </style>
-        </head>
-        <body>${html}</body>
-      </html>
-    `;
+  const generateDocx = (record: CertificateData): Blob => {
+    if (!docxBinary) throw new Error('No template loaded');
     
-    const blob = new Blob(['\ufeff', docxContent], {
-      type: 'application/msword'
+    const zip = new PizZip(docxBinary);
+    const doc = new Docxtemplater(zip, {
+      paragraphLoop: true,
+      linebreaks: true,
     });
-    
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${filename}.doc`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+
+    // Prepare data - convert all values to strings
+    const templateData: { [key: string]: string } = {};
+    Object.keys(record).forEach(key => {
+      templateData[key] = record[key]?.toString() || '';
+    });
+
+    doc.render(templateData);
+
+    const blob = doc.getZip().generate({
+      type: 'blob',
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    });
+
+    return blob;
+  };
+
+  const downloadDocx = (blob: Blob, filename: string) => {
+    saveAs(blob, `${filename}.docx`);
   };
 
   const handleDownloadCurrent = () => {
-    const merged = mergeCertificate(docxHtml, data[currentIndex]);
-    const name = data[currentIndex].name || data[currentIndex].Name || `certificate_${currentIndex + 1}`;
-    downloadDocx(merged, `${name}`);
+    try {
+      const blob = generateDocx(data[currentIndex]);
+      const name = data[currentIndex].name || data[currentIndex].Name || `certificate_${currentIndex + 1}`;
+      downloadDocx(blob, name.toString());
+    } catch (error) {
+      console.error('Error generating DOCX:', error);
+      alert('Error generating certificate. Please check your template and data.');
+    }
   };
 
   const handleDownloadAll = () => {
     data.forEach((record, idx) => {
       setTimeout(() => {
-        const merged = mergeCertificate(docxHtml, record);
-        const name = record.name || record.Name || `certificate_${idx + 1}`;
-        downloadDocx(merged, `${name}`);
-      }, idx * 500); // Delay to prevent browser blocking
+        try {
+          const blob = generateDocx(record);
+          const name = record.name || record.Name || `certificate_${idx + 1}`;
+          downloadDocx(blob, name.toString());
+        } catch (error) {
+          console.error(`Error generating certificate ${idx + 1}:`, error);
+        }
+      }, idx * 500);
     });
   };
 
@@ -256,9 +327,13 @@ const CertificateGenerator: React.FC = () => {
 
     for (let i = rangeStart - 1; i < rangeEnd; i++) {
       setTimeout(() => {
-        const merged = mergeCertificate(docxHtml, data[i]);
-        const name = data[i].name || data[i].Name || `certificate_${i + 1}`;
-        downloadDocx(merged, `${name}`);
+        try {
+          const blob = generateDocx(data[i]);
+          const name = data[i].name || data[i].Name || `certificate_${i + 1}`;
+          downloadDocx(blob, name.toString());
+        } catch (error) {
+          console.error(`Error generating certificate ${i + 1}:`, error);
+        }
       }, (i - rangeStart + 1) * 500);
     }
     
