@@ -272,12 +272,23 @@ const CertificateGenerator: React.FC = () => {
     const doc = new Docxtemplater(zip, {
       paragraphLoop: true,
       linebreaks: true,
+      nullGetter: () => '', // Return empty string instead of undefined
     });
 
-    // Prepare data - convert all values to strings
+    // Prepare data - match placeholders case-insensitively
     const templateData: { [key: string]: string } = {};
-    Object.keys(record).forEach(key => {
-      templateData[key] = record[key]?.toString() || '';
+    
+    placeholders.forEach(placeholder => {
+      // Try to find matching column (case-insensitive)
+      const matchingKey = Object.keys(record).find(
+        key => key.toLowerCase() === placeholder.toLowerCase()
+      );
+      
+      if (matchingKey) {
+        templateData[placeholder] = record[matchingKey]?.toString() || '';
+      } else {
+        templateData[placeholder] = ''; // Empty if no match found
+      }
     });
 
     doc.render(templateData);
