@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import mammoth from 'mammoth';
-import { Upload, Download, FileText, FileSpreadsheet, Check, AlertCircle, Eye } from 'lucide-react';
+import { Upload, Download, FileText, FileSpreadsheet, Check, AlertCircle, Eye, Trash2, File } from 'lucide-react';
 
 interface CertificateData {
   [key: string]: string | number;
@@ -32,6 +32,9 @@ const CertificateGenerator: React.FC = () => {
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
   const [templateName, setTemplateName] = useState<string>('');
   const [showSaveDialog, setShowSaveDialog] = useState(false);
+  const [showRangeDialog, setShowRangeDialog] = useState(false);
+  const [rangeStart, setRangeStart] = useState(1);
+  const [rangeEnd, setRangeEnd] = useState(1);
   const certRef = useRef<HTMLDivElement>(null);
 
   // Load saved templates on mount
@@ -41,6 +44,44 @@ const CertificateGenerator: React.FC = () => {
       setSavedTemplates(JSON.parse(saved));
     }
   }, []);
+
+  // Convert Excel serial date to readable date
+  const excelDateToJSDate = (serial: number): string => {
+    const utc_days = Math.floor(serial - 25569);
+    const utc_value = utc_days * 86400;
+    const date_info = new Date(utc_value * 1000);
+    
+    const fractional_day = serial - Math.floor(serial) + 0.0000001;
+    let total_seconds = Math.floor(86400 * fractional_day);
+    const seconds = total_seconds % 60;
+    total_seconds -= seconds;
+    const hours = Math.floor(total_seconds / (60 * 60));
+    const minutes = Math.floor(total_seconds / 60) % 60;
+    
+    const date = new Date(date_info.getFullYear(), date_info.getMonth(), date_info.getDate(), hours, minutes, seconds);
+    
+    return date.toLocaleDateString('en-US', { 
+      year: 'numeric', 
+      month: 'long', 
+      day: 'numeric' 
+    });
+  };
+
+  const processExcelData = (jsonData: CertificateData[]): CertificateData[] => {
+    return jsonData.map(row => {
+      const processed: CertificateData = {};
+      Object.keys(row).forEach(key => {
+        const value = row[key];
+        // Check if value is a number that looks like an Excel date (between 1900 and 2100)
+        if (typeof value === 'number' && value > 1 && value < 73050) {
+          processed[key] = excelDateToJSDate(value);
+        } else {
+          processed[key] = value;
+        }
+      });
+      return processed;
+    });
+  };
 
   const handleDocxUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -54,7 +95,6 @@ const CertificateGenerator: React.FC = () => {
       setDocxHtml(html);
       setDocxTemplate(html);
       
-      // Extract placeholders - supports {placeholder}, {{placeholder}}, [placeholder]
       const placeholderRegex = /\{(\w+)\}|\{\{(\w+)\}\}|\[(\w+)\]/g;
       const found = new Set<string>();
       let match;
@@ -69,7 +109,6 @@ const CertificateGenerator: React.FC = () => {
       setUploadStatus(prev => ({ ...prev, docx: true }));
       setSelectedTemplateId(null);
       
-      // Show save dialog
       setTemplateName(file.name.replace('.docx', ''));
       setShowSaveDialog(true);
     } catch (error) {
@@ -137,9 +176,11 @@ const CertificateGenerator: React.FC = () => {
         const jsonData = XLSX.utils.sheet_to_json(ws) as CertificateData[];
         
         if (jsonData.length > 0) {
-          setData(jsonData);
+          const processedData = processExcelData(jsonData);
+          setData(processedData);
           setExcelColumns(Object.keys(jsonData[0]));
           setCurrentIndex(0);
+          setRangeEnd(processedData.length);
           setUploadStatus(prev => ({ ...prev, excel: true }));
         }
       } catch (error) {
@@ -153,7 +194,6 @@ const CertificateGenerator: React.FC = () => {
   const mergeCertificate = (template: string, record: CertificateData): string => {
     let merged = template;
     
-    // Replace {placeholder}, {{placeholder}}, and [placeholder] formats
     Object.keys(record).forEach(key => {
       const value = record[key]?.toString() || '';
       merged = merged.replace(new RegExp(`\\{${key}\\}`, 'gi'), value);
@@ -162,6 +202,67 @@ const CertificateGenerator: React.FC = () => {
     });
     
     return merged;
+  };
+
+  const downloadDocx = async (html: string, filename: string) => {
+    // Create a simple DOCX structure
+    const docxContent = `
+      <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
+        <head>
+          <meta charset='utf-8'>
+          <style>
+            body { font-family: 'Times New Roman', serif; }
+          </style>
+        </head>
+        <body>${html}</body>
+      </html>
+    `;
+    
+    const blob = new Blob(['\ufeff', docxContent], {
+      type: 'application/msword'
+    });
+    
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${filename}.doc`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleDownloadCurrent = () => {
+    const merged = mergeCertificate(docxHtml, data[currentIndex]);
+    const name = data[currentIndex].name || data[currentIndex].Name || `certificate_${currentIndex + 1}`;
+    downloadDocx(merged, `${name}`);
+  };
+
+  const handleDownloadAll = () => {
+    data.forEach((record, idx) => {
+      setTimeout(() => {
+        const merged = mergeCertificate(docxHtml, record);
+        const name = record.name || record.Name || `certificate_${idx + 1}`;
+        downloadDocx(merged, `${name}`);
+      }, idx * 500); // Delay to prevent browser blocking
+    });
+  };
+
+  const handleDownloadRange = () => {
+    if (rangeStart < 1 || rangeEnd > data.length || rangeStart > rangeEnd) {
+      alert('Invalid range. Please check your input.');
+      return;
+    }
+
+    for (let i = rangeStart - 1; i < rangeEnd; i++) {
+      setTimeout(() => {
+        const merged = mergeCertificate(docxHtml, data[i]);
+        const name = data[i].name || data[i].Name || `certificate_${i + 1}`;
+        downloadDocx(merged, `${name}`);
+      }, (i - rangeStart + 1) * 500);
+    }
+    
+    setShowRangeDialog(false);
   };
 
   const handlePrint = () => {
@@ -250,9 +351,12 @@ const CertificateGenerator: React.FC = () => {
               >
                 <div className="flex items-start justify-between mb-2">
                   <div className="flex-1">
-                    <div className="font-semibold text-gray-800">{template.name}</div>
+                    <div className="font-semibold text-gray-800 flex items-center gap-2">
+                      <File className="w-4 h-4" />
+                      {template.name}
+                    </div>
                     <div className="text-xs text-gray-500 mt-1">
-                      {template.placeholders.length} placeholders • {template.uploadDate}
+                      {template.placeholders.length} fields • {template.uploadDate}
                     </div>
                   </div>
                   <button
@@ -260,10 +364,10 @@ const CertificateGenerator: React.FC = () => {
                       e.stopPropagation();
                       deleteTemplate(template.id);
                     }}
-                    className="text-red-500 hover:text-red-700 text-xl leading-none"
+                    className="text-red-500 hover:text-red-700 p-1"
                     title="Delete template"
                   >
-                    ×
+                    <Trash2 className="w-4 h-4" />
                   </button>
                 </div>
               </div>
@@ -352,7 +456,7 @@ const CertificateGenerator: React.FC = () => {
           <div className="bg-purple-50 p-4 rounded-lg border border-purple-200">
             <h3 className="font-bold text-purple-900 mb-2">💡 Auto-Mapping</h3>
             <p className="text-sm text-purple-700">
-              The app automatically matches placeholders with Excel columns. Make sure your placeholder names match your column names!
+              Placeholders are matched with Excel columns. Date serials are auto-converted!
             </p>
           </div>
         )}
@@ -372,7 +476,7 @@ const CertificateGenerator: React.FC = () => {
                 <label className="flex flex-col items-center justify-center h-40 px-4 transition bg-white border-2 border-dashed rounded-lg cursor-pointer hover:border-purple-500 border-gray-300">
                   <div className="flex flex-col items-center space-y-2">
                     <FileText className="w-10 h-10 text-gray-400" />
-                    <span className="font-medium text-gray-600">Upload DOCX Template</span>
+                    <span className="font-medium text-gray-600">Upload New DOCX Template</span>
                     <span className="text-xs text-gray-500">
                       {uploadStatus.docx ? '✓ Uploaded' : 'Click to select file'}
                     </span>
@@ -438,7 +542,7 @@ const CertificateGenerator: React.FC = () => {
                 </div>
 
                 {/* Certificate Preview */}
-                <div className="bg-white border-4 border-gray-200 rounded-lg overflow-auto p-8">
+                <div className="bg-white border-4 border-gray-200 rounded-lg overflow-auto p-8 max-h-[600px]">
                   <div 
                     ref={certRef}
                     className="certificate-preview mx-auto"
@@ -448,22 +552,50 @@ const CertificateGenerator: React.FC = () => {
                   />
                 </div>
 
-                {/* Print Buttons */}
-                <div className="flex gap-4 mt-6">
-                  <button
-                    onClick={handlePrint}
-                    className="flex-1 flex items-center justify-center gap-2 px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition shadow-lg"
-                  >
-                    <Download className="w-5 h-5" />
-                    Print Current Certificate
-                  </button>
-                  <button
-                    onClick={handlePrintAll}
-                    className="flex-1 flex items-center justify-center gap-2 px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition shadow-lg"
-                  >
-                    <Download className="w-5 h-5" />
-                    Print All ({data.length})
-                  </button>
+                {/* Action Buttons */}
+                <div className="mt-6 space-y-4">
+                  {/* Download Buttons */}
+                  <div className="grid grid-cols-3 gap-4">
+                    <button
+                      onClick={handleDownloadCurrent}
+                      className="flex items-center justify-center gap-2 px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition shadow-lg"
+                    >
+                      <Download className="w-5 h-5" />
+                      Download Current
+                    </button>
+                    <button
+                      onClick={() => setShowRangeDialog(true)}
+                      className="flex items-center justify-center gap-2 px-4 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition shadow-lg"
+                    >
+                      <Download className="w-5 h-5" />
+                      Download Range
+                    </button>
+                    <button
+                      onClick={handleDownloadAll}
+                      className="flex items-center justify-center gap-2 px-4 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition shadow-lg"
+                    >
+                      <Download className="w-5 h-5" />
+                      Download All ({data.length})
+                    </button>
+                  </div>
+
+                  {/* Print Buttons */}
+                  <div className="grid grid-cols-2 gap-4">
+                    <button
+                      onClick={handlePrint}
+                      className="flex items-center justify-center gap-2 px-4 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition shadow-lg"
+                    >
+                      <Download className="w-5 h-5" />
+                      Print Current
+                    </button>
+                    <button
+                      onClick={handlePrintAll}
+                      className="flex items-center justify-center gap-2 px-4 py-3 bg-purple-700 text-white rounded-lg hover:bg-purple-800 transition shadow-lg"
+                    >
+                      <Download className="w-5 h-5" />
+                      Print All ({data.length})
+                    </button>
+                  </div>
                 </div>
               </div>
             </>
@@ -488,7 +620,7 @@ const CertificateGenerator: React.FC = () => {
                 </li>
                 <li className="flex gap-3">
                   <span className="font-bold text-purple-600">4.</span>
-                  <span>Print individual certificates or all at once</span>
+                  <span>Download or print certificates individually, by range, or all at once</span>
                 </li>
               </ol>
             </div>
@@ -518,6 +650,56 @@ const CertificateGenerator: React.FC = () => {
               </button>
               <button
                 onClick={() => setShowSaveDialog(false)}
+                className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Download Range Dialog */}
+      {showRangeDialog && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-96 shadow-2xl">
+            <h3 className="text-xl font-bold mb-4">Download Range</h3>
+            <div className="space-y-4 mb-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">From Record:</label>
+                <input
+                  type="number"
+                  min="1"
+                  max={data.length}
+                  value={rangeStart}
+                  onChange={(e) => setRangeStart(parseInt(e.target.value) || 1)}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">To Record:</label>
+                <input
+                  type="number"
+                  min="1"
+                  max={data.length}
+                  value={rangeEnd}
+                  onChange={(e) => setRangeEnd(parseInt(e.target.value) || data.length)}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                />
+              </div>
+              <p className="text-sm text-gray-600">
+                Total records: {data.length} | Selected: {Math.max(0, rangeEnd - rangeStart + 1)}
+              </p>
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={handleDownloadRange}
+                className="flex-1 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition"
+              >
+                Download
+              </button>
+              <button
+                onClick={() => setShowRangeDialog(false)}
                 className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition"
               >
                 Cancel
