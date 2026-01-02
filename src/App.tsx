@@ -4,7 +4,7 @@ import mammoth from 'mammoth';
 import Docxtemplater from 'docxtemplater';
 import PizZip from 'pizzip';
 import { saveAs } from 'file-saver';
-import { Upload, Download, FileText, FileSpreadsheet, Check, AlertCircle, Eye, Trash2, File } from 'lucide-react';
+import { Upload, Download, FileText, FileSpreadsheet, Check, AlertCircle, Eye, Trash2, File, FolderOpen } from 'lucide-react';
 
 interface CertificateData {
   [key: string]: string | number;
@@ -18,11 +18,81 @@ interface UploadStatus {
 interface SavedTemplate {
   id: string;
   name: string;
+  fileName: string;
   html: string;
   binary: ArrayBuffer;
   placeholders: string[];
   uploadDate: string;
 }
+
+// IndexedDB for storing file handles
+const DB_NAME = 'CertificateGeneratorDB';
+const DB_VERSION = 2;
+const HANDLES_STORE = 'fileHandles';
+
+const openDB = (): Promise<IDBDatabase> => {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(request.result);
+    
+    request.onupgradeneeded = (event) => {
+      const db = (event.target as IDBOpenDBRequest).result;
+      if (!db.objectStoreNames.contains(HANDLES_STORE)) {
+        db.createObjectStore(HANDLES_STORE, { keyPath: 'id' });
+      }
+    };
+  });
+};
+
+const saveFileHandle = async (id: string, handle: FileSystemFileHandle): Promise<void> => {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction([HANDLES_STORE], 'readwrite');
+    const store = transaction.objectStore(HANDLES_STORE);
+    const request = store.put({ id, handle });
+    
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
+};
+
+const getFileHandle = async (id: string): Promise<FileSystemFileHandle | null> => {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction([HANDLES_STORE], 'readonly');
+    const store = transaction.objectStore(HANDLES_STORE);
+    const request = store.get(id);
+    
+    request.onsuccess = () => resolve(request.result?.handle || null);
+    request.onerror = () => reject(request.error);
+  });
+};
+
+const getAllFileHandles = async (): Promise<{ id: string; handle: FileSystemFileHandle }[]> => {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction([HANDLES_STORE], 'readonly');
+    const store = transaction.objectStore(HANDLES_STORE);
+    const request = store.getAll();
+    
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+};
+
+const deleteFileHandle = async (id: string): Promise<void> => {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction([HANDLES_STORE], 'readwrite');
+    const store = transaction.objectStore(HANDLES_STORE);
+    const request = store.delete(id);
+    
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
+};
 
 const CertificateGenerator: React.FC = () => {
   const [data, setData] = useState<CertificateData[]>([]);
@@ -35,46 +105,143 @@ const CertificateGenerator: React.FC = () => {
   const [excelColumns, setExcelColumns] = useState<string[]>([]);
   const [savedTemplates, setSavedTemplates] = useState<SavedTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
-  const [templateName, setTemplateName] = useState<string>('');
-  const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [showRangeDialog, setShowRangeDialog] = useState(false);
   const [rangeStart, setRangeStart] = useState(1);
   const [rangeEnd, setRangeEnd] = useState(1);
+  const [excelFileName, setExcelFileName] = useState<string>('');
+  const [hasFileSystemSupport, setHasFileSystemSupport] = useState(false);
   const certRef = useRef<HTMLDivElement>(null);
 
-  // Load saved templates on mount
+  // Check for File System Access API support
   React.useEffect(() => {
-    const saved = localStorage.getItem('certificateTemplates');
-    if (saved) {
-      const templates = JSON.parse(saved);
-      // Convert base64 back to ArrayBuffer
-      const templatesWithBinary = templates.map((t: any) => ({
-        ...t,
-        binary: base64ToArrayBuffer(t.binary)
-      }));
-      setSavedTemplates(templatesWithBinary);
+    const supported = 'showOpenFilePicker' in window;
+    setHasFileSystemSupport(supported);
+    if (!supported) {
+      console.warn('⚠️ File System Access API not supported in this browser');
     }
   }, []);
 
-  const arrayBufferToBase64 = (buffer: ArrayBuffer): string => {
-    const bytes = new Uint8Array(buffer);
-    let binary = '';
-    for (let i = 0; i < bytes.byteLength; i++) {
-      binary += String.fromCharCode(bytes[i]);
+  // Load saved file handles on mount
+  React.useEffect(() => {
+    const loadSavedFiles = async () => {
+      if (!hasFileSystemSupport) {
+        console.log('⚠️ File System Access API not available');
+        return;
+      }
+
+      try {
+        console.log('🔍 Loading saved file handles...');
+        const handles = await getAllFileHandles();
+        console.log(`📁 Found ${handles.length} saved file(s)`);
+
+        for (const { id, handle } of handles) {
+          try {
+            // Request permission to read the file
+            const permission = await handle.queryPermission({ mode: 'read' });
+            
+            if (permission === 'granted' || permission === 'prompt') {
+              if (id.startsWith('template_')) {
+                await loadTemplateFromHandle(handle, id);
+              } else if (id === 'excel') {
+                await loadExcelFromHandle(handle);
+              }
+            } else {
+              console.log(`⚠️ No permission for file: ${handle.name}`);
+            }
+          } catch (error) {
+            console.error(`❌ Error loading file ${id}:`, error);
+          }
+        }
+      } catch (error) {
+        console.error('❌ Error loading saved files:', error);
+      }
+    };
+
+    if (hasFileSystemSupport) {
+      loadSavedFiles();
     }
-    return btoa(binary);
+  }, [hasFileSystemSupport]);
+
+  const loadTemplateFromHandle = async (handle: FileSystemFileHandle, id: string) => {
+    try {
+      const file = await handle.getFile();
+      const arrayBuffer = await file.arrayBuffer();
+      
+      // Convert to HTML for preview
+      const result = await mammoth.convertToHtml({ arrayBuffer: arrayBuffer.slice(0) });
+      const html = result.value;
+      
+      // Extract placeholders
+      const zip = new PizZip(arrayBuffer);
+      const doc = new Docxtemplater(zip, {
+        paragraphLoop: true,
+        linebreaks: true,
+      });
+      
+      const text = doc.getFullText();
+      const placeholderRegex = /\{(\w+)\}|\{\{(\w+)\}\}|\[(\w+)\]/g;
+      const found = new Set<string>();
+      let match;
+      
+      while ((match = placeholderRegex.exec(text)) !== null) {
+        const placeholder = match[1] || match[2] || match[3];
+        if (placeholder) found.add(placeholder);
+      }
+      
+      const template: SavedTemplate = {
+        id,
+        name: file.name.replace('.docx', ''),
+        fileName: file.name,
+        html,
+        binary: arrayBuffer,
+        placeholders: Array.from(found),
+        uploadDate: new Date(file.lastModified).toLocaleDateString()
+      };
+
+      setSavedTemplates(prev => {
+        const filtered = prev.filter(t => t.id !== id);
+        return [...filtered, template];
+      });
+
+      // Auto-load first template
+      if (!docxBinary) {
+        setDocxHtml(html);
+        setDocxTemplate(html);
+        setDocxBinary(arrayBuffer);
+        setPlaceholders(Array.from(found));
+        setUploadStatus(prev => ({ ...prev, docx: true }));
+        setSelectedTemplateId(id);
+        console.log(`✅ Loaded template: ${file.name}`);
+      }
+    } catch (error) {
+      console.error('Error loading template from handle:', error);
+    }
   };
 
-  const base64ToArrayBuffer = (base64: string): ArrayBuffer => {
-    const binaryString = atob(base64);
-    const bytes = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) {
-      bytes[i] = binaryString.charCodeAt(i);
+  const loadExcelFromHandle = async (handle: FileSystemFileHandle) => {
+    try {
+      const file = await handle.getFile();
+      const arrayBuffer = await file.arrayBuffer();
+      const wb = XLSX.read(arrayBuffer, { type: 'array' });
+      const wsname = wb.SheetNames[0];
+      const ws = wb.Sheets[wsname];
+      const jsonData = XLSX.utils.sheet_to_json(ws) as CertificateData[];
+      
+      if (jsonData.length > 0) {
+        const processedData = processExcelData(jsonData);
+        setData(processedData);
+        setExcelColumns(Object.keys(jsonData[0]));
+        setCurrentIndex(0);
+        setRangeEnd(processedData.length);
+        setUploadStatus(prev => ({ ...prev, excel: true }));
+        setExcelFileName(file.name);
+        console.log(`✅ Loaded Excel: ${file.name} (${processedData.length} records)`);
+      }
+    } catch (error) {
+      console.error('Error loading Excel from handle:', error);
     }
-    return bytes.buffer;
   };
 
-  // Convert Excel serial date to readable date
   const excelDateToJSDate = (serial: number): string => {
     const utc_days = Math.floor(serial - 25569);
     const utc_value = utc_days * 86400;
@@ -101,7 +268,6 @@ const CertificateGenerator: React.FC = () => {
       const processed: CertificateData = {};
       Object.keys(row).forEach(key => {
         const value = row[key];
-        // Check if value is a number that looks like an Excel date (between 1900 and 2100)
         if (typeof value === 'number' && value > 1 && value < 73050) {
           processed[key] = excelDateToJSDate(value);
         } else {
@@ -112,84 +278,62 @@ const CertificateGenerator: React.FC = () => {
     });
   };
 
-  const handleDocxUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const handleDocxUpload = async () => {
+    if (!hasFileSystemSupport) {
+      alert('File System Access API is not supported in your browser. Please use Chrome, Edge, or another Chromium-based browser.');
+      return;
+    }
 
     try {
-      const arrayBuffer = await file.arrayBuffer();
-      
-      // Store the binary for later use
-      setDocxBinary(arrayBuffer);
-      
-      // Convert to HTML for preview only
-      const result = await mammoth.convertToHtml({ arrayBuffer: arrayBuffer.slice(0) });
-      const html = result.value;
-      setDocxHtml(html);
-      setDocxTemplate(html);
-      
-      // Extract placeholders from the DOCX
-      const zip = new PizZip(arrayBuffer);
-      const doc = new Docxtemplater(zip, {
-        paragraphLoop: true,
-        linebreaks: true,
+      const [fileHandle] = await (window as any).showOpenFilePicker({
+        types: [{
+          description: 'Word Documents',
+          accept: { 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'] }
+        }],
+        multiple: false
       });
+
+      const id = `template_${Date.now()}`;
+      await saveFileHandle(id, fileHandle);
+      await loadTemplateFromHandle(fileHandle, id);
       
-      const text = doc.getFullText();
-      const placeholderRegex = /\{(\w+)\}|\{\{(\w+)\}\}|\[(\w+)\]/g;
-      const found = new Set<string>();
-      let match;
-      
-      while ((match = placeholderRegex.exec(text)) !== null) {
-        const placeholder = match[1] || match[2] || match[3];
-        if (placeholder) found.add(placeholder);
-      }
-      
-      const foundPlaceholders = Array.from(found);
-      setPlaceholders(foundPlaceholders);
-      setUploadStatus(prev => ({ ...prev, docx: true }));
-      setSelectedTemplateId(null);
-      
-      setTemplateName(file.name.replace('.docx', ''));
-      setShowSaveDialog(true);
+      console.log('✅ Template saved with file system access');
     } catch (error) {
-      console.error('Error reading DOCX:', error);
-      alert('Error reading DOCX file. Please try again.');
+      if ((error as Error).name !== 'AbortError') {
+        console.error('Error selecting DOCX:', error);
+        alert('Error selecting file. Please try again.');
+      }
     }
   };
 
-  const saveTemplate = () => {
-    if (!templateName.trim()) {
-      alert('Please enter a template name');
+  const handleExcelUpload = async () => {
+    if (!hasFileSystemSupport) {
+      alert('File System Access API is not supported in your browser. Please use Chrome, Edge, or another Chromium-based browser.');
       return;
     }
 
-    if (!docxBinary) {
-      alert('No template to save');
-      return;
+    try {
+      const [fileHandle] = await (window as any).showOpenFilePicker({
+        types: [{
+          description: 'Excel Files',
+          accept: { 
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
+            'application/vnd.ms-excel': ['.xls']
+          }
+        }],
+        multiple: false
+      });
+
+      await saveFileHandle('excel', fileHandle);
+      await loadExcelFromHandle(fileHandle);
+      
+      console.log('✅ Excel saved with file system access');
+    } catch (error) {
+      if ((error as Error).name !== 'AbortError') {
+        console.error('Error selecting Excel:', error);
+        alert('Error selecting file. Please try again.');
+      }
     }
-
-    const newTemplate: SavedTemplate = {
-      id: Date.now().toString(),
-      name: templateName,
-      html: docxHtml,
-      binary: docxBinary,
-      placeholders: placeholders,
-      uploadDate: new Date().toLocaleDateString()
-    };
-
-    const updated = [...savedTemplates, newTemplate];
-    setSavedTemplates(updated);
-    
-    // Convert binary to base64 for localStorage
-    const templatesForStorage = updated.map(t => ({
-      ...t,
-      binary: arrayBufferToBase64(t.binary)
-    }));
-    localStorage.setItem('certificateTemplates', JSON.stringify(templatesForStorage));
-    
-    setShowSaveDialog(false);
-    setSelectedTemplateId(newTemplate.id);
   };
 
   const loadTemplate = (template: SavedTemplate) => {
@@ -201,55 +345,27 @@ const CertificateGenerator: React.FC = () => {
     setSelectedTemplateId(template.id);
   };
 
-  const deleteTemplate = (id: string) => {
+  const deleteTemplate = async (id: string) => {
     if (!confirm('Are you sure you want to delete this template?')) return;
     
-    const updated = savedTemplates.filter(t => t.id !== id);
-    setSavedTemplates(updated);
-    
-    const templatesForStorage = updated.map(t => ({
-      ...t,
-      binary: arrayBufferToBase64(t.binary)
-    }));
-    localStorage.setItem('certificateTemplates', JSON.stringify(templatesForStorage));
-    
-    if (selectedTemplateId === id) {
-      setDocxHtml('');
-      setDocxTemplate('');
-      setDocxBinary(null);
-      setPlaceholders([]);
-      setUploadStatus(prev => ({ ...prev, docx: false }));
-      setSelectedTemplateId(null);
-    }
-  };
-
-  const handleExcelUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (evt) => {
-      try {
-        const bstr = evt.target?.result;
-        const wb = XLSX.read(bstr, { type: 'binary' });
-        const wsname = wb.SheetNames[0];
-        const ws = wb.Sheets[wsname];
-        const jsonData = XLSX.utils.sheet_to_json(ws) as CertificateData[];
-        
-        if (jsonData.length > 0) {
-          const processedData = processExcelData(jsonData);
-          setData(processedData);
-          setExcelColumns(Object.keys(jsonData[0]));
-          setCurrentIndex(0);
-          setRangeEnd(processedData.length);
-          setUploadStatus(prev => ({ ...prev, excel: true }));
-        }
-      } catch (error) {
-        console.error('Error reading Excel:', error);
-        alert('Error reading Excel file. Please try again.');
+    try {
+      await deleteFileHandle(id);
+      const updated = savedTemplates.filter(t => t.id !== id);
+      setSavedTemplates(updated);
+      
+      if (selectedTemplateId === id) {
+        setDocxHtml('');
+        setDocxTemplate('');
+        setDocxBinary(null);
+        setPlaceholders([]);
+        setUploadStatus(prev => ({ ...prev, docx: false }));
+        setSelectedTemplateId(null);
       }
-    };
-    reader.readAsBinaryString(file);
+      console.log('✅ Template deleted');
+    } catch (error) {
+      console.error('❌ Error deleting template:', error);
+      alert('Error deleting template. Please try again.');
+    }
   };
 
   const mergeCertificate = (template: string, record: CertificateData): string => {
@@ -272,14 +388,12 @@ const CertificateGenerator: React.FC = () => {
     const doc = new Docxtemplater(zip, {
       paragraphLoop: true,
       linebreaks: true,
-      nullGetter: () => '', // Return empty string instead of undefined
+      nullGetter: () => '',
     });
 
-    // Prepare data - match placeholders case-insensitively
     const templateData: { [key: string]: string } = {};
     
     placeholders.forEach(placeholder => {
-      // Try to find matching column (case-insensitive)
       const matchingKey = Object.keys(record).find(
         key => key.toLowerCase() === placeholder.toLowerCase()
       );
@@ -287,7 +401,7 @@ const CertificateGenerator: React.FC = () => {
       if (matchingKey) {
         templateData[placeholder] = record[matchingKey]?.toString() || '';
       } else {
-        templateData[placeholder] = ''; // Empty if no match found
+        templateData[placeholder] = '';
       }
     });
 
@@ -422,6 +536,14 @@ const CertificateGenerator: React.FC = () => {
       <div className="w-80 bg-white shadow-xl p-6 overflow-y-auto">
         <h2 className="text-2xl font-bold text-gray-800 mb-6">📁 Saved Templates</h2>
         
+        {!hasFileSystemSupport && (
+          <div className="bg-yellow-50 border border-yellow-300 rounded-lg p-4 mb-6">
+            <p className="text-sm text-yellow-800">
+              ⚠️ File System Access API not supported. Please use Chrome, Edge, or another Chromium-based browser for persistent file access.
+            </p>
+          </div>
+        )}
+
         {/* Saved Templates List */}
         {savedTemplates.length > 0 ? (
           <div className="space-y-3 mb-8">
@@ -461,7 +583,7 @@ const CertificateGenerator: React.FC = () => {
           </div>
         ) : (
           <div className="bg-gray-50 p-4 rounded-lg mb-8 text-center text-gray-500 text-sm">
-            No saved templates yet. Upload a DOCX to get started!
+            No saved templates yet. Select a DOCX file to get started!
           </div>
         )}
 
@@ -497,7 +619,9 @@ const CertificateGenerator: React.FC = () => {
                   <div className="w-4 h-4 border-2 border-gray-300 rounded" />
                 )}
                 <FileSpreadsheet className="w-4 h-4 text-gray-500" />
-                <span className="text-gray-700">Excel Data {uploadStatus.excel && `(${data.length} records)`}</span>
+                <span className="text-gray-700">
+                  {excelFileName || 'Excel Data'} {uploadStatus.excel && `(${data.length} records)`}
+                </span>
               </div>
             </div>
           </div>
@@ -559,40 +683,34 @@ const CertificateGenerator: React.FC = () => {
             <div className="grid grid-cols-2 gap-6">
               {/* DOCX Upload */}
               <div>
-                <label className="flex flex-col items-center justify-center h-40 px-4 transition bg-white border-2 border-dashed rounded-lg cursor-pointer hover:border-purple-500 border-gray-300">
+                <button
+                  onClick={handleDocxUpload}
+                  className="flex flex-col items-center justify-center w-full h-40 px-4 transition bg-white border-2 border-dashed rounded-lg hover:border-purple-500 border-gray-300"
+                >
                   <div className="flex flex-col items-center space-y-2">
-                    <FileText className="w-10 h-10 text-gray-400" />
-                    <span className="font-medium text-gray-600">Upload New DOCX Template</span>
+                    <FolderOpen className="w-10 h-10 text-gray-400" />
+                    <span className="font-medium text-gray-600">Select DOCX Template</span>
                     <span className="text-xs text-gray-500">
-                      {uploadStatus.docx ? '✓ Uploaded' : 'Click to select file'}
+                      {uploadStatus.docx ? '✓ Template linked' : 'File will be remembered'}
                     </span>
                   </div>
-                  <input 
-                    type="file" 
-                    className="hidden" 
-                    accept=".docx" 
-                    onChange={handleDocxUpload} 
-                  />
-                </label>
+                </button>
               </div>
 
               {/* Excel Upload */}
               <div>
-                <label className="flex flex-col items-center justify-center h-40 px-4 transition bg-white border-2 border-dashed rounded-lg cursor-pointer hover:border-blue-500 border-gray-300">
+                <button
+                  onClick={handleExcelUpload}
+                  className="flex flex-col items-center justify-center w-full h-40 px-4 transition bg-white border-2 border-dashed rounded-lg hover:border-blue-500 border-gray-300"
+                >
                   <div className="flex flex-col items-center space-y-2">
-                    <Upload className="w-10 h-10 text-gray-400" />
-                    <span className="font-medium text-gray-600">Upload Excel Data</span>
+                    <FolderOpen className="w-10 h-10 text-gray-400" />
+                    <span className="font-medium text-gray-600">Select Excel Data</span>
                     <span className="text-xs text-gray-500">
-                      {uploadStatus.excel ? `✓ ${data.length} records` : 'Click to select file'}
+                      {uploadStatus.excel ? `✓ ${data.length} records` : 'File will be remembered'}
                     </span>
                   </div>
-                  <input 
-                    type="file" 
-                    className="hidden" 
-                    accept=".xlsx,.xls" 
-                    onChange={handleExcelUpload} 
-                  />
-                </label>
+                </button>
               </div>
             </div>
           </div>
@@ -694,56 +812,25 @@ const CertificateGenerator: React.FC = () => {
               <ol className="space-y-3 text-gray-700">
                 <li className="flex gap-3">
                   <span className="font-bold text-purple-600">1.</span>
-                  <span>Upload your DOCX template with placeholders like <code className="bg-gray-100 px-2 py-1 rounded">{`{name}`}</code>, <code className="bg-gray-100 px-2 py-1 rounded">{`{degree}`}</code></span>
+                  <span>Click to select your DOCX template with placeholders like <code className="bg-gray-100 px-2 py-1 rounded">{`{name}`}</code>, <code className="bg-gray-100 px-2 py-1 rounded">{`{degree}`}</code></span>
                 </li>
                 <li className="flex gap-3">
                   <span className="font-bold text-purple-600">2.</span>
-                  <span>Upload your Excel file with matching column names (name, degree, etc.)</span>
+                  <span>Click to select your Excel file with matching column names</span>
                 </li>
                 <li className="flex gap-3">
                   <span className="font-bold text-purple-600">3.</span>
-                  <span>Preview the merged certificates and navigate through records</span>
+                  <span>Grant permission when prompted - files will be remembered!</span>
                 </li>
                 <li className="flex gap-3">
                   <span className="font-bold text-purple-600">4.</span>
-                  <span>Download or print certificates individually, by range, or all at once</span>
+                  <span>Next time you open the app, your files will load automatically</span>
                 </li>
               </ol>
             </div>
           )}
         </div>
       </div>
-
-      {/* Save Template Dialog */}
-      {showSaveDialog && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 w-96 shadow-2xl">
-            <h3 className="text-xl font-bold mb-4">Save Template</h3>
-            <input
-              type="text"
-              value={templateName}
-              onChange={(e) => setTemplateName(e.target.value)}
-              placeholder="Enter template name"
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg mb-4 focus:outline-none focus:ring-2 focus:ring-purple-500"
-              autoFocus
-            />
-            <div className="flex gap-3">
-              <button
-                onClick={saveTemplate}
-                className="flex-1 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition"
-              >
-                Save
-              </button>
-              <button
-                onClick={() => setShowSaveDialog(false)}
-                className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Download Range Dialog */}
       {showRangeDialog && (
