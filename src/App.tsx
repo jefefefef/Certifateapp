@@ -418,11 +418,37 @@ const CertificateGenerator: React.FC = () => {
     });
 
     const templateData: { [key: string]: string } = {};
+    
+    // Add special date placeholders
+    const now = new Date();
+    templateData['TODAY'] = now.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+    templateData['DATE'] = now.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+    templateData['DATE_SHORT'] = now.toLocaleDateString('en-US');
+    templateData['DATE_ISO'] = now.toISOString().split('T')[0]; // 2025-12-03 format
+    templateData['YEAR'] = now.getFullYear().toString();
+    templateData['MONTH'] = (now.getMonth() + 1).toString().padStart(2, '0');
+    templateData['DAY'] = now.getDate().toString().padStart(2, '0');
+    
+    // Process all placeholders
     placeholders.forEach(placeholder => {
-      const matchingKey = Object.keys(record).find(
-        key => key.toLowerCase() === placeholder.toLowerCase()
-      );
-      templateData[placeholder] = matchingKey ? (record[matchingKey]?.toString() || '') : '';
+      // Check if placeholder has _UPPER modifier
+      if (placeholder.endsWith('_UPPER')) {
+        const baseName = placeholder.replace('_UPPER', '');
+        const matchingKey = Object.keys(record).find(
+          key => key.toLowerCase() === baseName.toLowerCase()
+        );
+        if (matchingKey) {
+          templateData[placeholder] = record[matchingKey]?.toString().toUpperCase() || '';
+        }
+      } else {
+        // Normal placeholder
+        const matchingKey = Object.keys(record).find(
+          key => key.toLowerCase() === placeholder.toLowerCase()
+        );
+        if (matchingKey) {
+          templateData[placeholder] = record[matchingKey]?.toString() || '';
+        }
+      }
     });
 
     doc.render(templateData);
@@ -475,6 +501,19 @@ const CertificateGenerator: React.FC = () => {
     }
     setShowRangeDialog(false);
   };
+
+  const handleDownloadBySelectedCriteria =() {
+    // needs another function to search from the excel data
+    // makes it easier to download specific individual certificates
+
+
+  }
+
+  const handleExcelDatabaseHeaders =() {
+    // this function loads headers form the excel file to be used as criteria
+
+
+  }
 
   const handlePrint = () => {
     const printWindow = window.open('', '', 'width=800,height=600');
