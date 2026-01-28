@@ -503,16 +503,17 @@ const CertificateGenerator: React.FC = () => {
   };
 
   const handleDownloadBySelectedCriteria =() {
-    // needs another function to search from the excel data
+    // needs another function to search from the excel data - preferably a modal
+    // selects a column and a value to filter by
     // makes it easier to download specific individual certificates
-
+    // needs a button
 
   }
 
-  const handleExcelDatabaseHeaders =() {
+  const handleExcelDatabaseHeadersAndQuery =() {
     // this function loads headers form the excel file to be used as criteria
-
-
+    // loads into a dropdown in the modal
+    //loads unique values for that header into another dropdown
   }
 
   const handlePrint = () => {
