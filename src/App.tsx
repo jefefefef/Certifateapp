@@ -30,6 +30,7 @@ const DB_VERSION = 2; // Increment version to trigger upgrade
 const STORE_NAME = 'templates';
 const EXCEL_STORE = 'excelData';
 
+
 const openDB = (): Promise<IDBDatabase> => {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
@@ -150,6 +151,10 @@ const CertificateGenerator: React.FC = () => {
   const [rangeStart, setRangeStart] = useState(1);
   const [rangeEnd, setRangeEnd] = useState(1);
   const certRef = useRef<HTMLDivElement>(null);
+  const [filterColumn, setFilterColumn] = useState<string>('');
+const [filterValue, setFilterValue] = useState<string>('');
+const [uniqueValues, setUniqueValues] = useState<string[]>([]);
+
 
   // Load templates on mount
   React.useEffect(() => {
@@ -502,19 +507,46 @@ const CertificateGenerator: React.FC = () => {
     setShowRangeDialog(false);
   };
 
-  const handleDownloadBySelectedCriteria =() {
-    // needs another function to search from the excel data - preferably a modal
-    // selects a column and a value to filter by
-    // makes it easier to download specific individual certificates
-    // needs a button
-
+  const handleDownloadBySelectedCriteria = () => {
+  if (!filterColumn || !filterValue) {
+    alert('Please select a column and value.');
+    return;
   }
 
-  const handleExcelDatabaseHeadersAndQuery =() {
-    // this function loads headers form the excel file to be used as criteria
-    // loads into a dropdown in the modal
-    //loads unique values for that header into another dropdown
-  }
+  const filtered = data.filter(record => record[filterColumn]?.toString() === filterValue);
+
+    if (filtered.length === 0) {
+      alert('No matching records found.');
+      return;
+    }
+
+    filtered.forEach((record, idx) => {
+      setTimeout(() => {
+        try {
+          const blob = generateDocx(record);
+          const name =
+            record.name ||
+            record.Name ||
+            `${filterValue}_${idx + 1}`;
+          saveAs(blob, `${name}.docx`);
+        } catch (error) {
+          console.error(`Error generating certificate ${idx + 1}:`, error);
+        }
+      }, idx * 400);
+    });
+  };
+
+
+  const handleExcelDatabaseHeadersAndQuery = (column: string) => {
+  setFilterColumn(column);
+
+    const values = Array.from(
+      new Set(data.map(row => row[column]?.toString()).filter(Boolean))
+    );
+
+  setUniqueValues(values as string[]);
+  };
+
 
   const handlePrint = () => {
     const printWindow = window.open('', '', 'width=800,height=600');
@@ -710,32 +742,38 @@ const CertificateGenerator: React.FC = () => {
               </div>
 
               <div className="mt-6 space-y-4">
+                {/* 🔎 Filter & Download by Criteria */}
                 <div className="grid grid-cols-3 gap-4">
-                  <button onClick={handleDownloadCurrent} className="flex items-center justify-center gap-2 px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
-                    <Download className="w-5 h-5" />
-                    Download Current
-                  </button>
-                  <button onClick={() => setShowRangeDialog(true)} className="flex items-center justify-center gap-2 px-4 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">
-                    <Download className="w-5 h-5" />
-                    Download Range
-                  </button>
-                  <button onClick={handleDownloadAll} className="flex items-center justify-center gap-2 px-4 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700">
-                    <Download className="w-5 h-5" />
-                    Download All ({data.length})
-                  </button>
-                </div>
+                  <select
+                    className="border p-2 rounded"
+                    value={filterColumn}
+                    onChange={(e) => handleExcelDatabaseHeadersAndQuery(e.target.value)}
+                  >
+                    <option value="">Select Column</option>
+                    {excelColumns.map(col => (
+                      <option key={col} value={col}>{col}</option>
+                    ))}
+                  </select>
 
-                <div className="grid grid-cols-2 gap-4">
-                  <button onClick={handlePrint} className="flex items-center justify-center gap-2 px-4 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700">
-                    <Download className="w-5 h-5" />
-                    Print Current
-                  </button>
-                  <button onClick={handlePrintAll} className="flex items-center justify-center gap-2 px-4 py-3 bg-purple-700 text-white rounded-lg hover:bg-purple-800">
-                    <Download className="w-5 h-5" />
-                    Print All ({data.length})
+                  <select
+                    className="border p-2 rounded"
+                    value={filterValue}
+                    onChange={(e) => setFilterValue(e.target.value)}
+                    disabled={!filterColumn}
+                  >
+                    <option value="">Select Value</option>
+                    {uniqueValues.map(val => (
+                      <option key={val} value={val}>{val}</option>
+                    ))}
+                  </select>
+
+                  <button
+                    onClick={handleDownloadBySelectedCriteria}
+                    className="bg-orange-600 text-white rounded px-4 py-2 hover:bg-orange-700"
+                  >
+                    Download Filtered
                   </button>
                 </div>
-              </div>
             </div>
           )}
 
