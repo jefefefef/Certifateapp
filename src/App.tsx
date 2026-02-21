@@ -193,6 +193,11 @@ const CertificateGenerator: React.FC = () => {
   const [filterColumn, setFilterColumn] = useState<string>("");
   const [filterValue, setFilterValue] = useState<string>("");
   const [uniqueValues, setUniqueValues] = useState<string[]>([]);
+  
+  // New state for filtered preview
+  const [filteredData, setFilteredData] = useState<CertificateData[]>([]);
+  const [isFiltered, setIsFiltered] = useState(false);
+  const [filteredIndex, setFilteredIndex] = useState(0);
 
   // Load templates on mount
   React.useEffect(() => {
@@ -429,6 +434,11 @@ const CertificateGenerator: React.FC = () => {
       setCurrentIndex(0);
       setRangeStart(1);
       setRangeEnd(1);
+      // Reset filter state
+      setIsFiltered(false);
+      setFilterColumn("");
+      setFilterValue("");
+      setFilteredData([]);
       if (excelInputRef.current) {
         excelInputRef.current.value = "";
       }
@@ -460,6 +470,12 @@ const CertificateGenerator: React.FC = () => {
           setCurrentIndex(0);
           setRangeEnd(processedData.length);
           setUploadStatus((prev) => ({ ...prev, excel: true }));
+
+          // Reset filter state when new Excel data is loaded
+          setIsFiltered(false);
+          setFilterColumn("");
+          setFilterValue("");
+          setFilteredData([]);
 
           // Save Excel data to IndexedDB
           await saveExcelData(processedData, columns);
@@ -552,11 +568,14 @@ const CertificateGenerator: React.FC = () => {
 
   const handleDownloadCurrent = () => {
     try {
-      const blob = generateDocx(data[currentIndex]);
+      const record = isFiltered && filteredData.length > 0 
+        ? filteredData[filteredIndex] 
+        : data[currentIndex];
+      const blob = generateDocx(record);
       const name =
-        data[currentIndex].name ||
-        data[currentIndex].Name ||
-        `certificate_${currentIndex + 1}`;
+        record.name ||
+        record.Name ||
+        `certificate_${isFiltered ? filteredIndex + 1 : currentIndex + 1}`;
       saveAs(blob, `${name}.docx`);
     } catch (error) {
       console.error("Error generating DOCX:", error);
@@ -565,7 +584,9 @@ const CertificateGenerator: React.FC = () => {
   };
 
   const handleDownloadAll = () => {
-    data.forEach((record, idx) => {
+    const dataToDownload = isFiltered && filteredData.length > 0 ? filteredData : data;
+    
+    dataToDownload.forEach((record, idx) => {
       setTimeout(() => {
         try {
           const blob = generateDocx(record);
@@ -600,15 +621,45 @@ const CertificateGenerator: React.FC = () => {
     setShowRangeDialog(false);
   };
 
+  const handleFilterValueSelect = (value: string) => {
+    setFilterValue(value);
+    
+    // Filter the data
+    const filtered = data.filter(
+      (record) => record[filterColumn]?.toString() === value
+    );
+    
+    setFilteredData(filtered);
+    setIsFiltered(true);
+    setFilteredIndex(0); // Start at first filtered record
+    
+    console.log(`✅ Filtered to ${filtered.length} records`);
+  };
+
+  const handleExcelDatabaseHeadersAndQuery = (column: string) => {
+    setFilterColumn(column);
+    // clear any previous value/search
+    setFilterValue("");
+    setIsFiltered(false); // Reset filtered state when column changes
+    setFilteredData([]); // Clear filtered data
+
+    const values = Array.from(
+      new Set(data.map((row) => row[column]?.toString()).filter(Boolean)),
+    );
+
+    setUniqueValues(values as string[]);
+  };
+
   const handleDownloadBySelectedCriteria = () => {
     if (!filterColumn || !filterValue) {
       alert("Please select a column and value.");
       return;
     }
 
-    const filtered = data.filter(
-      (record) => record[filterColumn]?.toString() === filterValue,
-    );
+    // Use filteredData if available, otherwise filter now
+    const filtered = isFiltered && filteredData.length > 0 
+      ? filteredData 
+      : data.filter((record) => record[filterColumn]?.toString() === filterValue);
 
     if (filtered.length === 0) {
       alert("No matching records found.");
@@ -629,16 +680,11 @@ const CertificateGenerator: React.FC = () => {
     });
   };
 
-  const handleExcelDatabaseHeadersAndQuery = (column: string) => {
-    setFilterColumn(column);
-    // clear any previous value/search
+  const handleClearFilter = () => {
+    setIsFiltered(false);
+    setFilterColumn("");
     setFilterValue("");
-
-    const values = Array.from(
-      new Set(data.map((row) => row[column]?.toString()).filter(Boolean)),
-    );
-
-    setUniqueValues(values as string[]);
+    setFilteredData([]);
   };
 
   const handlePrint = () => {
@@ -654,10 +700,13 @@ const CertificateGenerator: React.FC = () => {
   const handlePrintAll = () => {
     const printWindow = window.open("", "", "width=800,height=600");
     if (!printWindow) return;
-    const allCertificates = data
+    
+    const dataToPrint = isFiltered && filteredData.length > 0 ? filteredData : data;
+    
+    const allCertificates = dataToPrint
       .map(
         (record, idx) =>
-          `<div style="page-break-after:${idx < data.length - 1 ? "always" : "auto"};">${mergeCertificate(docxHtml, record)}</div>`,
+          `<div style="page-break-after:${idx < dataToPrint.length - 1 ? "always" : "auto"};">${mergeCertificate(docxHtml, record)}</div>`,
       )
       .join("");
     printWindow.document.write(`
@@ -871,32 +920,53 @@ const CertificateGenerator: React.FC = () => {
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-xl font-semibold text-gray-800 flex items-center gap-2">
                   <Eye className="w-5 h-5" />
-                  Preview
+                  Preview {isFiltered && <span className="text-sm text-orange-600">(Filtered)</span>}
                 </h2>
                 <div className="flex gap-2 items-center">
                   <button
-                    onClick={() =>
-                      setCurrentIndex(Math.max(0, currentIndex - 1))
-                    }
-                    disabled={currentIndex === 0}
+                    onClick={() => {
+                      if (isFiltered) {
+                        setFilteredIndex(Math.max(0, filteredIndex - 1));
+                      } else {
+                        setCurrentIndex(Math.max(0, currentIndex - 1));
+                      }
+                    }}
+                    disabled={isFiltered ? filteredIndex === 0 : currentIndex === 0}
                     className="px-4 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     ← Previous
                   </button>
                   <span className="px-4 py-2 bg-purple-100 text-purple-800 rounded font-medium">
-                    {currentIndex + 1} / {data.length}
+                    {isFiltered && filteredData.length > 0
+                      ? `${filteredIndex + 1} / ${filteredData.length} (filtered)` 
+                      : `${currentIndex + 1} / ${data.length}`}
                   </span>
                   <button
-                    onClick={() =>
-                      setCurrentIndex(
-                        Math.min(data.length - 1, currentIndex + 1),
-                      )
-                    }
-                    disabled={currentIndex === data.length - 1}
+                    onClick={() => {
+                      if (isFiltered) {
+                        setFilteredIndex(Math.min(filteredData.length - 1, filteredIndex + 1));
+                      } else {
+                        setCurrentIndex(Math.min(data.length - 1, currentIndex + 1));
+                      }
+                    }}
+                    disabled={isFiltered 
+                      ? filteredIndex === filteredData.length - 1 || filteredData.length === 0
+                      : currentIndex === data.length - 1}
                     className="px-4 py-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     Next →
                   </button>
+                  
+                  {/* Clear filter button */}
+                  {isFiltered && (
+                    <button
+                      onClick={handleClearFilter}
+                      className="px-3 py-2 bg-gray-500 text-white rounded hover:bg-gray-600 ml-2"
+                      title="Clear filter"
+                    >
+                      ✕ Clear Filter
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -905,9 +975,19 @@ const CertificateGenerator: React.FC = () => {
                   ref={certRef}
                   className="certificate-preview mx-auto"
                   dangerouslySetInnerHTML={{
-                    __html: mergeCertificate(docxHtml, data[currentIndex]),
+                    __html: mergeCertificate(
+                      docxHtml, 
+                      isFiltered && filteredData.length > 0 
+                        ? filteredData[filteredIndex] 
+                        : data[currentIndex]
+                    ),
                   }}
                 />
+                {isFiltered && filteredData.length === 0 && (
+                  <div className="text-center text-red-500 py-8">
+                    No records match the selected filter
+                  </div>
+                )}
               </div>
 
               <div className="mt-6 space-y-4">
@@ -939,19 +1019,17 @@ const CertificateGenerator: React.FC = () => {
                       placeholder="Search value"
                     />
                     {/* suggestion dropdown */}
-                    {filterColumn && filterValue && (
-                      <ul className="absolute z-10 bg-white border rounded w-full max-h-40 overflow-auto">
+                    {filterColumn && filterValue && uniqueValues.length > 0 && (
+                      <ul className="absolute z-10 bg-white border rounded w-full max-h-40 overflow-auto shadow-lg">
                         {uniqueValues
                           .filter((v) =>
-                            v
-                              .toLowerCase()
-                              .includes(filterValue.toLowerCase()),
+                            v.toLowerCase().includes(filterValue.toLowerCase()),
                           )
                           .map((v) => (
                             <li
                               key={v}
                               className="px-2 py-1 hover:bg-gray-200 cursor-pointer"
-                              onClick={() => setFilterValue(v)}
+                              onClick={() => handleFilterValueSelect(v)}
                             >
                               {v}
                             </li>
@@ -962,9 +1040,56 @@ const CertificateGenerator: React.FC = () => {
 
                   <button
                     onClick={handleDownloadBySelectedCriteria}
-                    className="bg-orange-600 text-white rounded px-4 py-2 hover:bg-orange-700"
+                    disabled={!filterColumn || !filterValue}
+                    className={`rounded px-4 py-2 ${
+                      !filterColumn || !filterValue
+                        ? "bg-gray-400 text-white cursor-not-allowed"
+                        : "bg-orange-600 text-white hover:bg-orange-700"
+                    }`}
                   >
                     Download Filtered
+                  </button>
+                </div>
+
+                {/* Download buttons */}
+                <div className="grid grid-cols-3 gap-4">
+                  <button 
+                    onClick={handleDownloadCurrent} 
+                    className="flex items-center justify-center gap-2 px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                  >
+                    <Download className="w-5 h-5" />
+                    Download Current
+                  </button>
+                  <button 
+                    onClick={() => setShowRangeDialog(true)} 
+                    className="flex items-center justify-center gap-2 px-4 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
+                  >
+                    <Download className="w-5 h-5" />
+                    Download Range
+                  </button>
+                  <button 
+                    onClick={handleDownloadAll} 
+                    className="flex items-center justify-center gap-2 px-4 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700"
+                  >
+                    <Download className="w-5 h-5" />
+                    Download {isFiltered ? 'Filtered' : 'All'} ({isFiltered ? filteredData.length : data.length})
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <button 
+                    onClick={handlePrint} 
+                    className="flex items-center justify-center gap-2 px-4 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700"
+                  >
+                    <Download className="w-5 h-5" />
+                    Print Current
+                  </button>
+                  <button 
+                    onClick={handlePrintAll} 
+                    className="flex items-center justify-center gap-2 px-4 py-3 bg-purple-700 text-white rounded-lg hover:bg-purple-800"
+                  >
+                    <Download className="w-5 h-5" />
+                    Print {isFiltered ? 'Filtered' : 'All'} ({isFiltered ? filteredData.length : data.length})
                   </button>
                 </div>
               </div>
