@@ -14,6 +14,7 @@ import {
   Eye,
   Trash2,
   File,
+  Filter,
 } from "lucide-react";
 
 interface CertificateData {
@@ -32,6 +33,11 @@ interface SavedTemplate {
   binary: string; // base64
   placeholders: string[];
   uploadDate: string;
+}
+
+interface FilterCondition {
+  column: string;
+  value: string;
 }
 
 // Simple IndexedDB operations
@@ -190,14 +196,17 @@ const CertificateGenerator: React.FC = () => {
   const [rangeEnd, setRangeEnd] = useState(1);
   const certRef = useRef<HTMLDivElement>(null);
   const excelInputRef = useRef<HTMLInputElement>(null);
+  
+  // Filter state
   const [filterColumn, setFilterColumn] = useState<string>("");
   const [filterValue, setFilterValue] = useState<string>("");
   const [uniqueValues, setUniqueValues] = useState<string[]>([]);
-  
-  // New state for filtered preview
   const [filteredData, setFilteredData] = useState<CertificateData[]>([]);
   const [isFiltered, setIsFiltered] = useState(false);
   const [filteredIndex, setFilteredIndex] = useState(0);
+  const [showFilterModal, setShowFilterModal] = useState(false);
+  const [filterConditions, setFilterConditions] = useState<FilterCondition[]>([]);
+  const [tempFilterConditions, setTempFilterConditions] = useState<FilterCondition[]>([]);
 
   // Load templates on mount
   React.useEffect(() => {
@@ -439,6 +448,8 @@ const CertificateGenerator: React.FC = () => {
       setFilterColumn("");
       setFilterValue("");
       setFilteredData([]);
+      setFilterConditions([]);
+      setTempFilterConditions([]);
       if (excelInputRef.current) {
         excelInputRef.current.value = "";
       }
@@ -476,6 +487,8 @@ const CertificateGenerator: React.FC = () => {
           setFilterColumn("");
           setFilterValue("");
           setFilteredData([]);
+          setFilterConditions([]);
+          setTempFilterConditions([]);
 
           // Save Excel data to IndexedDB
           await saveExcelData(processedData, columns);
@@ -621,27 +634,81 @@ const CertificateGenerator: React.FC = () => {
     setShowRangeDialog(false);
   };
 
-  const handleFilterValueSelect = (value: string) => {
-    setFilterValue(value);
+  const applyFilters = (conditions: FilterCondition[]): CertificateData[] => {
+    if (conditions.length === 0) return data;
     
-    // Filter the data
-    const filtered = data.filter(
-      (record) => record[filterColumn]?.toString() === value
+    return data.filter(record => {
+      // All conditions must match (AND logic)
+      return conditions.every(condition => {
+        const recordValue = record[condition.column]?.toString() || '';
+        return recordValue.toLowerCase() === condition.value.toLowerCase();
+      });
+    });
+  };
+
+  const handleAddFilterCondition = () => {
+    setTempFilterConditions([
+      ...tempFilterConditions,
+      { column: '', value: '' }
+    ]);
+  };
+
+  const handleRemoveFilterCondition = (index: number) => {
+    const newConditions = tempFilterConditions.filter((_, i) => i !== index);
+    setTempFilterConditions(newConditions);
+    
+    // Update filtered data preview
+    const filtered = applyFilters(newConditions);
+    setFilteredData(filtered);
+  };
+
+  const handleUpdateFilterCondition = (index: number, field: 'column' | 'value', newValue: string) => {
+    const updatedConditions = [...tempFilterConditions];
+    updatedConditions[index] = {
+      ...updatedConditions[index],
+      [field]: newValue
+    };
+    setTempFilterConditions(updatedConditions);
+    
+    // Update filtered data preview
+    const filtered = applyFilters(updatedConditions);
+    setFilteredData(filtered);
+  };
+
+  const handleApplyFilters = () => {
+    // Remove empty conditions
+    const validConditions = tempFilterConditions.filter(
+      c => c.column && c.value
     );
     
+    if (validConditions.length === 0) {
+      alert('Please add at least one filter condition');
+      return;
+    }
+    
+    setFilterConditions(validConditions);
+    const filtered = applyFilters(validConditions);
     setFilteredData(filtered);
     setIsFiltered(true);
-    setFilteredIndex(0); // Start at first filtered record
-    
-    console.log(`✅ Filtered to ${filtered.length} records`);
+    setFilteredIndex(0);
+    setShowFilterModal(false);
+  };
+
+  const handleClearAllFilters = () => {
+    setFilterConditions([]);
+    setTempFilterConditions([]);
+    setIsFiltered(false);
+    setFilteredData([]);
+    setFilterColumn('');
+    setFilterValue('');
   };
 
   const handleExcelDatabaseHeadersAndQuery = (column: string) => {
     setFilterColumn(column);
     // clear any previous value/search
     setFilterValue("");
-    setIsFiltered(false); // Reset filtered state when column changes
-    setFilteredData([]); // Clear filtered data
+    setIsFiltered(false);
+    setFilteredData([]);
 
     const values = Array.from(
       new Set(data.map((row) => row[column]?.toString()).filter(Boolean)),
@@ -651,15 +718,18 @@ const CertificateGenerator: React.FC = () => {
   };
 
   const handleDownloadBySelectedCriteria = () => {
-    if (!filterColumn || !filterValue) {
-      alert("Please select a column and value.");
+    // Use filterConditions if available, otherwise use tempFilterConditions
+    const conditions = filterConditions.length > 0 
+      ? filterConditions 
+      : tempFilterConditions.filter(c => c.column && c.value);
+    
+    if (conditions.length === 0) {
+      alert("Please add at least one filter condition.");
       return;
     }
 
-    // Use filteredData if available, otherwise filter now
-    const filtered = isFiltered && filteredData.length > 0 
-      ? filteredData 
-      : data.filter((record) => record[filterColumn]?.toString() === filterValue);
+    // Apply all conditions
+    const filtered = applyFilters(conditions);
 
     if (filtered.length === 0) {
       alert("No matching records found.");
@@ -670,8 +740,9 @@ const CertificateGenerator: React.FC = () => {
       setTimeout(() => {
         try {
           const blob = generateDocx(record);
-          const name =
-            record.name || record.Name || `${filterValue}_${idx + 1}`;
+          // Create a descriptive filename from filter values
+          const filterStr = conditions.map(c => c.value).join('_');
+          const name = record.name || record.Name || `${filterStr}_${idx + 1}`;
           saveAs(blob, `${name}.docx`);
         } catch (error) {
           console.error(`Error generating certificate ${idx + 1}:`, error);
@@ -681,10 +752,12 @@ const CertificateGenerator: React.FC = () => {
   };
 
   const handleClearFilter = () => {
+    setFilterConditions([]);
+    setTempFilterConditions([]);
     setIsFiltered(false);
-    setFilterColumn("");
-    setFilterValue("");
     setFilteredData([]);
+    setFilterColumn('');
+    setFilterValue('');
   };
 
   const handlePrint = () => {
@@ -991,63 +1064,22 @@ const CertificateGenerator: React.FC = () => {
               </div>
 
               <div className="mt-6 space-y-4">
-                {/* 🔎 Filter & Download by Criteria */}
-                <div className="grid grid-cols-3 gap-4">
-                  <select
-                    className="border p-2 rounded"
-                    value={filterColumn}
-                    onChange={(e) =>
-                      handleExcelDatabaseHeadersAndQuery(e.target.value)
-                    }
-                  >
-                    <option value="">Select Column</option>
-                    {excelColumns.map((col) => (
-                      <option key={col} value={col}>
-                        {col}
-                      </option>
-                    ))}
-                  </select>
-
-                  {/* searchable value input */}
-                  <div className="relative">
-                    <input
-                      type="text"
-                      className="border p-2 rounded w-full"
-                      value={filterValue}
-                      onChange={(e) => setFilterValue(e.target.value)}
-                      disabled={!filterColumn}
-                      placeholder="Search value"
-                    />
-                    {/* suggestion dropdown */}
-                    {filterColumn && filterValue && uniqueValues.length > 0 && (
-                      <ul className="absolute z-10 bg-white border rounded w-full max-h-40 overflow-auto shadow-lg">
-                        {uniqueValues
-                          .filter((v) =>
-                            v.toLowerCase().includes(filterValue.toLowerCase()),
-                          )
-                          .map((v) => (
-                            <li
-                              key={v}
-                              className="px-2 py-1 hover:bg-gray-200 cursor-pointer"
-                              onClick={() => handleFilterValueSelect(v)}
-                            >
-                              {v}
-                            </li>
-                          ))}
-                      </ul>
-                    )}
-                  </div>
-
+                {/* Filter Button */}
+                <div className="flex justify-end mb-4">
                   <button
-                    onClick={handleDownloadBySelectedCriteria}
-                    disabled={!filterColumn || !filterValue}
-                    className={`rounded px-4 py-2 ${
-                      !filterColumn || !filterValue
-                        ? "bg-gray-400 text-white cursor-not-allowed"
-                        : "bg-orange-600 text-white hover:bg-orange-700"
-                    }`}
+                    onClick={() => {
+                      setTempFilterConditions(filterConditions);
+                      setShowFilterModal(true);
+                    }}
+                    className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700"
                   >
-                    Download Filtered
+                    <Filter className="w-5 h-5" />
+                    Filter Records
+                    {isFiltered && (
+                      <span className="bg-white text-purple-600 rounded-full px-2 py-0.5 text-xs font-bold">
+                        {filteredData.length}
+                      </span>
+                    )}
                   </button>
                 </div>
 
@@ -1199,6 +1231,246 @@ const CertificateGenerator: React.FC = () => {
               </button>
               <button
                 onClick={() => setShowRangeDialog(false)}
+                className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Filter Modal */}
+      {showFilterModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-[500px] max-h-[80vh] overflow-y-auto shadow-2xl">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-xl font-bold">Filter Records</h3>
+              <button
+                onClick={() => {
+                  setTempFilterConditions(filterConditions);
+                  setShowFilterModal(false);
+                }}
+                className="text-gray-500 hover:text-gray-700"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              {/* Filter Conditions */}
+              <div className="space-y-3">
+                {tempFilterConditions.length === 0 ? (
+                  <div className="text-center text-gray-500 py-4 bg-gray-50 rounded-lg">
+                    No filters applied. Click "Add Filter" to get started.
+                  </div>
+                ) : (
+                  tempFilterConditions.map((condition, index) => (
+                    <div key={index} className="bg-gray-50 p-3 rounded-lg relative">
+                      <button
+                        onClick={() => handleRemoveFilterCondition(index)}
+                        className="absolute top-2 right-2 text-red-500 hover:text-red-700"
+                        title="Remove filter"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                      
+                      <div className="grid grid-cols-2 gap-2 pr-8">
+                        <div>
+                          <label className="block text-xs font-medium text-gray-700 mb-1">
+                            Column
+                          </label>
+                          <select
+                            className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                            value={condition.column}
+                            onChange={(e) => handleUpdateFilterCondition(index, 'column', e.target.value)}
+                          >
+                            <option value="">Select column</option>
+                            {excelColumns.map((col) => (
+                              <option key={col} value={col}>
+                                {col}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        
+                        <div>
+                          <label className="block text-xs font-medium text-gray-700 mb-1">
+                            Value
+                          </label>
+                          {condition.column ? (
+                            <div className="relative">
+                              <input
+                                type="text"
+                                className="w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                                value={condition.value}
+                                onChange={(e) => handleUpdateFilterCondition(index, 'value', e.target.value)}
+                                placeholder="Type to search..."
+                              />
+                              
+                              {/* Value suggestions */}
+                              {condition.value && (
+                                <ul className="absolute z-10 w-full mt-1 bg-white border rounded-lg shadow-lg max-h-40 overflow-auto">
+                                  {Array.from(new Set(
+                                    data
+                                      .map(row => row[condition.column]?.toString() || '')
+                                      .filter(v => v.toLowerCase().includes(condition.value.toLowerCase()))
+                                  )).slice(0, 10)
+                                    .map((v) => (
+                                      <li
+                                        key={v}
+                                        className="px-3 py-1 hover:bg-purple-50 cursor-pointer text-sm"
+                                        onClick={() => handleUpdateFilterCondition(index, 'value', v)}
+                                      >
+                                        {v}
+                                      </li>
+                                    ))}
+                                </ul>
+                              )}
+                            </div>
+                          ) : (
+                            <input
+                              type="text"
+                              className="w-full border rounded-lg px-3 py-2 text-sm bg-gray-100"
+                              value="Select a column first"
+                              disabled
+                            />
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              {/* Add Filter Button */}
+              <button
+                onClick={handleAddFilterCondition}
+                className="w-full px-4 py-2 border-2 border-dashed border-purple-300 text-purple-600 rounded-lg hover:bg-purple-50 transition-colors"
+              >
+                + Add Another Filter
+              </button>
+
+              {/* Preview of matched records */}
+              {tempFilterConditions.some(c => c.column && c.value) && (
+                <div className="mt-4 p-4 bg-purple-50 rounded-lg">
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <p className="text-sm text-purple-700">
+                        Found <span className="font-bold">{filteredData.length}</span> matching record(s)
+                      </p>
+                      {filteredData.length > 0 && (
+                        <p className="text-xs text-purple-600 mt-1">
+                          Showing all columns for these records
+                        </p>
+                      )}
+                    </div>
+                    {filteredData.length > 0 && (
+                      <button
+                        onClick={handleApplyFilters}
+                        className="px-3 py-1 bg-purple-600 text-white rounded hover:bg-purple-700 text-sm"
+                      >
+                        Apply Filters
+                      </button>
+                    )}
+                  </div>
+                  
+                  {/* Preview of first few filtered records */}
+                  {filteredData.length > 0 && (
+                    <div className="mt-3 max-h-40 overflow-auto bg-white rounded border">
+                      <table className="min-w-full text-xs">
+                        <thead className="bg-gray-50 sticky top-0">
+                          <tr>
+                            {excelColumns.slice(0, 4).map(col => (
+                              <th key={col} className="px-2 py-1 text-left font-medium text-gray-600">
+                                {col}
+                              </th>
+                            ))}
+                            {excelColumns.length > 4 && (
+                              <th className="px-2 py-1 text-left font-medium text-gray-600">
+                                ...
+                              </th>
+                            )}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {filteredData.slice(0, 3).map((record, idx) => (
+                            <tr key={idx} className="border-t">
+                              {excelColumns.slice(0, 4).map(col => (
+                                <td key={col} className="px-2 py-1 truncate max-w-[100px]">
+                                  {record[col]?.toString() || '-'}
+                                </td>
+                              ))}
+                              {excelColumns.length > 4 && (
+                                <td className="px-2 py-1 text-gray-400">
+                                  +{excelColumns.length - 4} more
+                                </td>
+                              )}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      {filteredData.length > 3 && (
+                        <div className="text-center text-gray-500 text-xs py-1 border-t">
+                          ... and {filteredData.length - 3} more
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Active Filters Indicator */}
+              {filterConditions.length > 0 && (
+                <div className="mt-4 p-3 bg-blue-50 rounded-lg">
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="text-sm font-medium text-blue-700">Active Filters:</span>
+                    <button
+                      onClick={handleClearAllFilters}
+                      className="text-blue-700 hover:text-blue-900 text-xs font-medium"
+                    >
+                      Clear All
+                    </button>
+                  </div>
+                  <div className="space-y-1">
+                    {filterConditions.map((condition, idx) => (
+                      <div key={idx} className="text-sm text-blue-600 flex items-center gap-2">
+                        <span className="bg-blue-100 px-2 py-0.5 rounded">
+                          {condition.column} = {condition.value}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Actions */}
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={() => {
+                  const validConditions = tempFilterConditions.filter(c => c.column && c.value);
+                  if (validConditions.length === 0) {
+                    alert('Please add at least one filter condition');
+                    return;
+                  }
+                  handleDownloadBySelectedCriteria();
+                  setShowFilterModal(false);
+                }}
+                disabled={!tempFilterConditions.some(c => c.column && c.value)}
+                className={`flex-1 px-4 py-2 rounded-lg ${
+                  !tempFilterConditions.some(c => c.column && c.value)
+                    ? "bg-gray-300 text-gray-500 cursor-not-allowed"
+                    : "bg-orange-600 text-white hover:bg-orange-700"
+                }`}
+              >
+                Download Filtered ({filteredData.length})
+              </button>
+              <button
+                onClick={() => {
+                  setTempFilterConditions(filterConditions);
+                  setShowFilterModal(false);
+                }}
                 className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
               >
                 Cancel
