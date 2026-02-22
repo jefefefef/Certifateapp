@@ -207,6 +207,11 @@ const CertificateGenerator: React.FC = () => {
   const [showFilterModal, setShowFilterModal] = useState(false);
   const [filterConditions, setFilterConditions] = useState<FilterCondition[]>([]);
   const [tempFilterConditions, setTempFilterConditions] = useState<FilterCondition[]>([]);
+  
+  // Excel Editor state
+  const [showExcelEditor, setShowExcelEditor] = useState(false);
+  const [editableData, setEditableData] = useState<CertificateData[]>([]);
+  const [newRowData, setNewRowData] = useState<CertificateData>({});
 
   // Load templates on mount
   React.useEffect(() => {
@@ -233,6 +238,7 @@ const CertificateGenerator: React.FC = () => {
         const excelData = await getExcelData();
         if (excelData) {
           setData(excelData.data);
+          setEditableData(excelData.data);
           setExcelColumns(excelData.columns);
           setCurrentIndex(0);
           setRangeEnd(excelData.data.length);
@@ -450,6 +456,9 @@ const CertificateGenerator: React.FC = () => {
       setFilteredData([]);
       setFilterConditions([]);
       setTempFilterConditions([]);
+      // Reset editor state
+      setEditableData([]);
+      setNewRowData({});
       if (excelInputRef.current) {
         excelInputRef.current.value = "";
       }
@@ -477,6 +486,7 @@ const CertificateGenerator: React.FC = () => {
           const columns = Object.keys(jsonData[0]);
 
           setData(processedData);
+          setEditableData(processedData); // Initialize editor data
           setExcelColumns(columns);
           setCurrentIndex(0);
           setRangeEnd(processedData.length);
@@ -1064,8 +1074,19 @@ const CertificateGenerator: React.FC = () => {
               </div>
 
               <div className="mt-6 space-y-4">
-                {/* Filter Button */}
-                <div className="flex justify-end mb-4">
+                {/* Action Buttons */}
+                <div className="flex justify-end gap-3 mb-4">
+                  <button
+                    onClick={() => {
+                      setEditableData([...data]);
+                      setShowExcelEditor(true);
+                    }}
+                    className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                  >
+                    <FileSpreadsheet className="w-5 h-5" />
+                    Edit Excel Data
+                  </button>
+                  
                   <button
                     onClick={() => {
                       setTempFilterConditions(filterConditions);
@@ -1472,6 +1493,231 @@ const CertificateGenerator: React.FC = () => {
                   setShowFilterModal(false);
                 }}
                 className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Excel Editor Modal */}
+      {showExcelEditor && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-6xl max-h-[90vh] overflow-y-auto shadow-2xl">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-xl font-bold">Edit Excel Data</h3>
+              <button
+                onClick={() => setShowExcelEditor(false)}
+                className="text-gray-500 hover:text-gray-700"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Data Table */}
+            <div className="overflow-x-auto mb-4">
+              <table className="min-w-full border-collapse border border-gray-300">
+                <thead className="bg-gray-100 sticky top-0">
+                  <tr>
+                    {excelColumns.map((col) => (
+                      <th key={col} className="border border-gray-300 px-4 py-2 text-left text-sm font-semibold">
+                        {col}
+                        <button
+                          onClick={() => {
+                            // Add new column
+                            const newCol = prompt("Enter new column name:");
+                            if (newCol && !excelColumns.includes(newCol)) {
+                              const updatedColumns = [...excelColumns, newCol];
+                              const updatedData = editableData.map(row => ({
+                                ...row,
+                                [newCol]: ""
+                              }));
+                              setExcelColumns(updatedColumns);
+                              setEditableData(updatedData);
+                            }
+                          }}
+                          className="ml-2 text-green-600 hover:text-green-800"
+                          title="Add column"
+                        >
+                          +
+                        </button>
+                      </th>
+                    ))}
+                    <th className="border border-gray-300 px-4 py-2 text-center">
+                      Actions
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {/* Existing rows */}
+                  {editableData.map((row, rowIndex) => (
+                    <tr key={rowIndex} className="hover:bg-gray-50">
+                      {excelColumns.map((col) => (
+                        <td key={col} className="border border-gray-300 px-4 py-2">
+                          <input
+                            type="text"
+                            value={row[col]?.toString() || ''}
+                            onChange={(e) => {
+                              const updatedData = [...editableData];
+                              updatedData[rowIndex] = {
+                                ...updatedData[rowIndex],
+                                [col]: e.target.value
+                              };
+                              setEditableData(updatedData);
+                            }}
+                            className="w-full px-2 py-1 border rounded focus:outline-none focus:ring-2 focus:ring-purple-500"
+                          />
+                        </td>
+                      ))}
+                      <td className="border border-gray-300 px-4 py-2 text-center">
+                        <button
+                          onClick={() => {
+                            const updatedData = editableData.filter((_, i) => i !== rowIndex);
+                            setEditableData(updatedData);
+                          }}
+                          className="text-red-600 hover:text-red-800 mx-1"
+                          title="Delete row"
+                        >
+                          <Trash2 className="w-4 h-4 inline" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                  
+                  {/* New row input */}
+                  <tr className="bg-blue-50">
+                    {excelColumns.map((col) => (
+                      <td key={col} className="border border-gray-300 px-4 py-2">
+                        <input
+                          type="text"
+                          placeholder={`Enter ${col}`}
+                          value={newRowData[col]?.toString() || ''}
+                          onChange={(e) => {
+                            setNewRowData({
+                              ...newRowData,
+                              [col]: e.target.value
+                            });
+                          }}
+                          className="w-full px-2 py-1 border rounded focus:outline-none focus:ring-2 focus:ring-green-500"
+                        />
+                      </td>
+                    ))}
+                    <td className="border border-gray-300 px-4 py-2 text-center">
+                      <button
+                        onClick={() => {
+                          // Check if any field is filled
+                          if (Object.keys(newRowData).length > 0) {
+                            setEditableData([...editableData, newRowData]);
+                            setNewRowData({});
+                          }
+                        }}
+                        className="text-green-600 hover:text-green-800"
+                        title="Add row"
+                      >
+                        +
+                      </button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            {/* Bulk Add Options */}
+            <div className="grid grid-cols-2 gap-4 mb-4">
+              <div>
+                <h4 className="font-semibold mb-2">Bulk Add Records</h4>
+                <textarea
+                  placeholder="Paste CSV data here (one row per line, comma-separated)"
+                  className="w-full h-24 p-2 border rounded focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  onChange={(e) => {
+                    const csvText = e.target.value;
+                    if (csvText.trim()) {
+                      const rows = csvText.split('\n');
+                      const newRows = rows.map(row => {
+                        const values = row.split(',').map(v => v.trim());
+                        const newRow: CertificateData = {};
+                        excelColumns.forEach((col, index) => {
+                          if (values[index]) {
+                            newRow[col] = values[index];
+                          }
+                        });
+                        return newRow;
+                      }).filter(row => Object.keys(row).length > 0);
+                      
+                      setEditableData([...editableData, ...newRows]);
+                    }
+                  }}
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Example: John,Doe,john@email.com,2024-01-01
+                </p>
+              </div>
+              
+              <div>
+                <h4 className="font-semibold mb-2">Import from File</h4>
+                <label className="flex items-center justify-center h-24 px-4 border-2 border-dashed border-purple-300 rounded-lg cursor-pointer hover:bg-purple-50">
+                  <div className="text-center">
+                    <Upload className="w-6 h-6 text-purple-600 mx-auto mb-1" />
+                    <span className="text-sm text-purple-600">Click to upload CSV/Excel</span>
+                  </div>
+                  <input
+                    type="file"
+                    className="hidden"
+                    accept=".csv,.xlsx,.xls"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) {
+                        const reader = new FileReader();
+                        reader.onload = (evt) => {
+                          try {
+                            const bstr = evt.target?.result;
+                            const wb = XLSX.read(bstr, { type: "binary" });
+                            const wsname = wb.SheetNames[0];
+                            const ws = wb.Sheets[wsname];
+                            const jsonData = XLSX.utils.sheet_to_json(ws) as CertificateData[];
+                            
+                            if (jsonData.length > 0) {
+                              const processedData = processExcelData(jsonData);
+                              setEditableData([...editableData, ...processedData]);
+                            }
+                          } catch (error) {
+                            console.error("Error importing file:", error);
+                            alert("Error importing file. Please check the format.");
+                          }
+                        };
+                        reader.readAsBinaryString(file);
+                      }
+                    }}
+                  />
+                </label>
+              </div>
+            </div>
+
+            {/* Modal Actions */}
+            <div className="flex gap-3 justify-end mt-6">
+              <button
+                onClick={() => {
+                  // Save changes
+                  setData(editableData);
+                  setRangeEnd(editableData.length);
+                  saveExcelData(editableData, excelColumns);
+                  setShowExcelEditor(false);
+                  alert("Excel data updated successfully!");
+                }}
+                className="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
+              >
+                Save Changes
+              </button>
+              <button
+                onClick={() => {
+                  if (confirm("Discard all changes?")) {
+                    setEditableData(data);
+                    setNewRowData({});
+                    setShowExcelEditor(false);
+                  }
+                }}
+                className="px-6 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
               >
                 Cancel
               </button>
