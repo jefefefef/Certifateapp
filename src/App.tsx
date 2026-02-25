@@ -40,11 +40,97 @@ interface FilterCondition {
   value: string;
 }
 
+interface DownloadCounter {
+  templateId: string;
+  templateName: string;
+  monthKey: string;
+  count: number;
+}
+
 // Simple IndexedDB operations
 const DB_NAME = "CertGenDB";
-const DB_VERSION = 2; // Increment version to trigger upgrade
+const DB_VERSION = 2;
 const STORE_NAME = "templates";
 const EXCEL_STORE = "excelData";
+
+// Counter functions using LocalStorage with CSV
+const COUNTERS_KEY = 'certificate_counters';
+
+const loadCounters = (): DownloadCounter[] => {
+  try {
+    const csv = localStorage.getItem(COUNTERS_KEY);
+    if (!csv) return [];
+    
+    const lines = csv.split('\n').slice(1);
+    return lines
+      .filter(line => line.trim())
+      .map(line => {
+        const [templateId, templateName, monthKey, count] = line.split(',');
+        return {
+          templateId,
+          templateName: templateName || '',
+          monthKey,
+          count: parseInt(count, 10) || 0
+        };
+      });
+  } catch (error) {
+    console.error('Error loading counters:', error);
+    return [];
+  }
+};
+
+const saveCounters = (counters: DownloadCounter[]): void => {
+  try {
+    const header = 'templateId,templateName,monthKey,count\n';
+    const csv = header + counters
+      .map(c => `${c.templateId},${c.templateName},${c.monthKey},${c.count}`)
+      .join('\n');
+    
+    localStorage.setItem(COUNTERS_KEY, csv);
+    console.log('✅ Counters saved to LocalStorage');
+  } catch (error) {
+    console.error('Error saving counters:', error);
+  }
+};
+
+const getNextCertificateNumber = (
+  templateId: string,
+  templateName: string
+): string => {
+  const counters = loadCounters();
+  const now = new Date();
+  const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  
+  const existingCounter = counters.find(
+    c => c.templateId === templateId && c.monthKey === monthKey
+  );
+  
+  let nextCount = 1;
+  
+  if (existingCounter) {
+    nextCount = existingCounter.count + 1;
+    existingCounter.count = nextCount;
+  } else {
+    counters.push({
+      templateId,
+      templateName,
+      monthKey,
+      count: 1
+    });
+  }
+  
+  const threeMonthsAgo = new Date();
+  threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+  const threeMonthsAgoKey = `${threeMonthsAgo.getFullYear()}-${String(threeMonthsAgo.getMonth() + 1).padStart(2, '0')}`;
+  
+  const filteredCounters = counters.filter(c => 
+    c.templateId === templateId ? c.monthKey >= threeMonthsAgoKey : true
+  );
+  
+  saveCounters(filteredCounters);
+  
+  return `${monthKey}-${String(nextCount).padStart(2, '0')}`;
+};
 
 const openDB = (): Promise<IDBDatabase> => {
   return new Promise((resolve, reject) => {
@@ -70,7 +156,6 @@ const saveTemplate = async (template: SavedTemplate): Promise<void> => {
       const transaction = db.transaction([STORE_NAME], "readwrite");
       const store = transaction.objectStore(STORE_NAME);
 
-      // Check size before saving
       const estimatedSize =
         template.binary.length + template.html.length + template.name.length;
       console.log(
@@ -78,7 +163,6 @@ const saveTemplate = async (template: SavedTemplate): Promise<void> => {
       );
 
       if (estimatedSize > 5 * 1024 * 1024) {
-        // 5MB limit
         reject(
           new Error("Template is too large (>5MB). Try a simpler DOCX file."),
         );
@@ -148,7 +232,6 @@ const saveExcelData = async (
   });
 };
 
-// remove stored excel record
 const deleteExcelData = async (): Promise<void> => {
   const db = await openDB();
   return new Promise((resolve, reject) => {
@@ -197,7 +280,6 @@ const CertificateGenerator: React.FC = () => {
   const certRef = useRef<HTMLDivElement>(null);
   const excelInputRef = useRef<HTMLInputElement>(null);
   
-  // Filter state
   const [filterColumn, setFilterColumn] = useState<string>("");
   const [filterValue, setFilterValue] = useState<string>("");
   const [uniqueValues, setUniqueValues] = useState<string[]>([]);
@@ -208,22 +290,18 @@ const CertificateGenerator: React.FC = () => {
   const [filterConditions, setFilterConditions] = useState<FilterCondition[]>([]);
   const [tempFilterConditions, setTempFilterConditions] = useState<FilterCondition[]>([]);
   
-  // Excel Editor state
   const [showExcelEditor, setShowExcelEditor] = useState(false);
   const [editableData, setEditableData] = useState<CertificateData[]>([]);
   const [newRowData, setNewRowData] = useState<CertificateData>({});
 
-  // Load templates on mount
   React.useEffect(() => {
     const loadData = async () => {
       try {
-        // Load templates
         const templates = await getAllTemplates();
         console.log(`✅ Loaded ${templates.length} template(s)`);
 
         setSavedTemplates(templates);
 
-        // Auto-load first template
         if (templates.length > 0) {
           const first = templates[0];
           setDocxHtml(first.html);
@@ -234,7 +312,6 @@ const CertificateGenerator: React.FC = () => {
           console.log(`🎯 Auto-loaded template: ${first.name}`);
         }
 
-        // Load Excel data
         const excelData = await getExcelData();
         if (excelData) {
           setData(excelData.data);
@@ -255,7 +332,7 @@ const CertificateGenerator: React.FC = () => {
   const arrayBufferToBase64 = (buffer: ArrayBuffer): string => {
     const bytes = new Uint8Array(buffer);
     let binary = "";
-    const chunkSize = 0x8000; // 32KB chunks
+    const chunkSize = 0x8000;
     for (let i = 0; i < bytes.length; i += chunkSize) {
       const chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
       binary += String.fromCharCode.apply(null, Array.from(chunk));
@@ -323,14 +400,12 @@ const CertificateGenerator: React.FC = () => {
       const arrayBuffer = await file.arrayBuffer();
       setDocxBinary(arrayBuffer);
 
-      // Convert to HTML for preview
       const result = await mammoth.convertToHtml({
         arrayBuffer: arrayBuffer.slice(0),
       });
       const html = result.value;
       setDocxHtml(html);
 
-      // Extract placeholders
       const zip = new PizZip(arrayBuffer);
       const doc = new Docxtemplater(zip, {
         paragraphLoop: true,
@@ -338,16 +413,36 @@ const CertificateGenerator: React.FC = () => {
       });
 
       const text = doc.getFullText();
-      const placeholderRegex = /\{(\w+)\}|\{\{(\w+)\}\}|\[(\w+)\]/g;
+      console.log("📄 Raw document text:", text);
+      
+      // Try different regex patterns to see what works
+      const regex1 = /\{([^}]+)\}/g;
+      const regex2 = /\{\{([^}]+)\}\}/g;
+      const regex3 = /\[([^\]]+)\]/g;
+      
       const found = new Set<string>();
       let match;
-
-      while ((match = placeholderRegex.exec(text)) !== null) {
-        const placeholder = match[1] || match[2] || match[3];
-        if (placeholder) found.add(placeholder);
+      
+      console.log("🔍 Testing regex patterns...");
+      
+      while ((match = regex1.exec(text)) !== null) {
+        console.log("✅ Found {placeholder}:", match[1]);
+        found.add(match[1]);
+      }
+      
+      while ((match = regex2.exec(text)) !== null) {
+        console.log("✅ Found {{placeholder}}:", match[1]);
+        found.add(match[1]);
+      }
+      
+      while ((match = regex3.exec(text)) !== null) {
+        console.log("✅ Found [placeholder]:", match[1]);
+        found.add(match[1]);
       }
 
       const foundPlaceholders = Array.from(found);
+      console.log("📋 All found placeholders:", foundPlaceholders);
+      
       setPlaceholders(foundPlaceholders);
       setUploadStatus((prev) => ({ ...prev, docx: true }));
       setSelectedTemplateId(null);
@@ -375,8 +470,6 @@ const CertificateGenerator: React.FC = () => {
       console.log("Template name:", templateName);
       console.log("Binary size:", docxBinary.byteLength, "bytes");
 
-      // Convert to base64
-      console.log("🔄 Converting to base64...");
       const base64 = arrayBufferToBase64(docxBinary);
       console.log("✅ Base64 length:", base64.length);
 
@@ -439,7 +532,6 @@ const CertificateGenerator: React.FC = () => {
 
     try {
       await deleteExcelData();
-      // reset related state
       setData([]);
       setExcelColumns([]);
       setUploadStatus((prev) => ({ ...prev, excel: false }));
@@ -449,14 +541,12 @@ const CertificateGenerator: React.FC = () => {
       setCurrentIndex(0);
       setRangeStart(1);
       setRangeEnd(1);
-      // Reset filter state
       setIsFiltered(false);
       setFilterColumn("");
       setFilterValue("");
       setFilteredData([]);
       setFilterConditions([]);
       setTempFilterConditions([]);
-      // Reset editor state
       setEditableData([]);
       setNewRowData({});
       if (excelInputRef.current) {
@@ -486,13 +576,12 @@ const CertificateGenerator: React.FC = () => {
           const columns = Object.keys(jsonData[0]);
 
           setData(processedData);
-          setEditableData(processedData); // Initialize editor data
+          setEditableData(processedData);
           setExcelColumns(columns);
           setCurrentIndex(0);
           setRangeEnd(processedData.length);
           setUploadStatus((prev) => ({ ...prev, excel: true }));
 
-          // Reset filter state when new Excel data is loaded
           setIsFiltered(false);
           setFilterColumn("");
           setFilterValue("");
@@ -500,7 +589,6 @@ const CertificateGenerator: React.FC = () => {
           setFilterConditions([]);
           setTempFilterConditions([]);
 
-          // Save Excel data to IndexedDB
           await saveExcelData(processedData, columns);
           console.log(
             `✅ Loaded and saved Excel: ${processedData.length} records`,
@@ -531,6 +619,9 @@ const CertificateGenerator: React.FC = () => {
   const generateDocx = (record: CertificateData): Blob => {
     if (!docxBinary) throw new Error("No template loaded");
 
+    console.log("🎯 Generating DOCX with placeholders:", placeholders);
+    console.log("📊 Current record:", record);
+
     const zip = new PizZip(docxBinary);
     const doc = new Docxtemplater(zip, {
       paragraphLoop: true,
@@ -540,7 +631,6 @@ const CertificateGenerator: React.FC = () => {
 
     const templateData: { [key: string]: string } = {};
 
-    // Add special date placeholders
     const now = new Date();
     templateData["TODAY"] = now.toLocaleDateString("en-US", {
       year: "numeric",
@@ -553,14 +643,25 @@ const CertificateGenerator: React.FC = () => {
       day: "numeric",
     });
     templateData["DATE_SHORT"] = now.toLocaleDateString("en-US");
-    templateData["DATE_ISO"] = now.toISOString().split("T")[0]; // 2025-12-03 format
+    templateData["DATE_ISO"] = now.toISOString().split("T")[0];
     templateData["YEAR"] = now.getFullYear().toString();
     templateData["MONTH"] = (now.getMonth() + 1).toString().padStart(2, "0");
     templateData["DAY"] = now.getDate().toString().padStart(2, "0");
+    
+    const templateName = selectedTemplateId 
+      ? savedTemplates.find(t => t.id === selectedTemplateId)?.name || 'Certificate'
+      : 'Certificate';
+    
+    const certNumber = getNextCertificateNumber(
+      selectedTemplateId || 'temp_' + Date.now(),
+      templateName
+    );
+    
+    console.log("🔢 Generated certificate number:", certNumber);
 
-    // Process all placeholders
     placeholders.forEach((placeholder) => {
-      // Check if placeholder has _UPPER modifier
+      console.log("🔍 Processing placeholder:", placeholder);
+      
       if (placeholder.endsWith("_UPPER")) {
         const baseName = placeholder.replace("_UPPER", "");
         const matchingKey = Object.keys(record).find(
@@ -569,18 +670,28 @@ const CertificateGenerator: React.FC = () => {
         if (matchingKey) {
           templateData[placeholder] =
             record[matchingKey]?.toString().toUpperCase() || "";
+          console.log(`✅ Mapped ${placeholder} to uppercase:`, templateData[placeholder]);
         }
-      } else {
-        // Normal placeholder
+      }
+      else if (placeholder.includes("-DATE_ISO") || placeholder.endsWith("DATE_ISO")) {
+        console.log(`🎯 Found DATE_ISO placeholder: ${placeholder} -> using cert number: ${certNumber}`);
+        templateData[placeholder] = certNumber;
+      }
+      else {
         const matchingKey = Object.keys(record).find(
           (key) => key.toLowerCase() === placeholder.toLowerCase(),
         );
         if (matchingKey) {
           templateData[placeholder] = record[matchingKey]?.toString() || "";
+          console.log(`✅ Mapped ${placeholder} to:`, templateData[placeholder]);
+        } else {
+          console.log(`⚠️ No match found for placeholder: ${placeholder}`);
         }
       }
     });
 
+    console.log("📦 Final template data:", templateData);
+    
     doc.render(templateData);
     return doc.getZip().generate({
       type: "blob",
@@ -648,7 +759,6 @@ const CertificateGenerator: React.FC = () => {
     if (conditions.length === 0) return data;
     
     return data.filter(record => {
-      // All conditions must match (AND logic)
       return conditions.every(condition => {
         const recordValue = record[condition.column]?.toString() || '';
         return recordValue.toLowerCase() === condition.value.toLowerCase();
@@ -667,7 +777,6 @@ const CertificateGenerator: React.FC = () => {
     const newConditions = tempFilterConditions.filter((_, i) => i !== index);
     setTempFilterConditions(newConditions);
     
-    // Update filtered data preview
     const filtered = applyFilters(newConditions);
     setFilteredData(filtered);
   };
@@ -680,13 +789,11 @@ const CertificateGenerator: React.FC = () => {
     };
     setTempFilterConditions(updatedConditions);
     
-    // Update filtered data preview
     const filtered = applyFilters(updatedConditions);
     setFilteredData(filtered);
   };
 
   const handleApplyFilters = () => {
-    // Remove empty conditions
     const validConditions = tempFilterConditions.filter(
       c => c.column && c.value
     );
@@ -715,7 +822,6 @@ const CertificateGenerator: React.FC = () => {
 
   const handleExcelDatabaseHeadersAndQuery = (column: string) => {
     setFilterColumn(column);
-    // clear any previous value/search
     setFilterValue("");
     setIsFiltered(false);
     setFilteredData([]);
@@ -728,7 +834,6 @@ const CertificateGenerator: React.FC = () => {
   };
 
   const handleDownloadBySelectedCriteria = () => {
-    // Use filterConditions if available, otherwise use tempFilterConditions
     const conditions = filterConditions.length > 0 
       ? filterConditions 
       : tempFilterConditions.filter(c => c.column && c.value);
@@ -738,7 +843,6 @@ const CertificateGenerator: React.FC = () => {
       return;
     }
 
-    // Apply all conditions
     const filtered = applyFilters(conditions);
 
     if (filtered.length === 0) {
@@ -750,7 +854,6 @@ const CertificateGenerator: React.FC = () => {
       setTimeout(() => {
         try {
           const blob = generateDocx(record);
-          // Create a descriptive filename from filter values
           const filterStr = conditions.map(c => c.value).join('_');
           const name = record.name || record.Name || `${filterStr}_${idx + 1}`;
           saveAs(blob, `${name}.docx`);
@@ -768,6 +871,35 @@ const CertificateGenerator: React.FC = () => {
     setFilteredData([]);
     setFilterColumn('');
     setFilterValue('');
+  };
+
+  const handleViewCounters = () => {
+    const counters = loadCounters();
+    console.log('📊 Current Counters:', counters);
+    
+    const tableData = counters.map(c => ({
+      Template: c.templateName,
+      'Month': c.monthKey,
+      'Downloads': c.count
+    }));
+    
+    console.table(tableData);
+    
+    if (counters.length === 0) {
+      alert('No download counters yet');
+    } else {
+      const summary = counters
+        .map(c => `${c.templateName} (${c.monthKey}): ${c.count} downloads`)
+        .join('\n');
+      alert(`Download Counters:\n${summary}`);
+    }
+  };
+
+  const handleResetCounters = () => {
+    if (confirm('Are you sure you want to reset all download counters?')) {
+      localStorage.removeItem(COUNTERS_KEY);
+      alert('Counters reset successfully');
+    }
   };
 
   const handlePrint = () => {
@@ -1040,7 +1172,6 @@ const CertificateGenerator: React.FC = () => {
                     Next →
                   </button>
                   
-                  {/* Clear filter button */}
                   {isFiltered && (
                     <button
                       onClick={handleClearFilter}
@@ -1074,8 +1205,21 @@ const CertificateGenerator: React.FC = () => {
               </div>
 
               <div className="mt-6 space-y-4">
-                {/* Action Buttons */}
                 <div className="flex justify-end gap-3 mb-4">
+                  <button
+                    onClick={handleViewCounters}
+                    className="flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 text-sm"
+                    title="View download counters"
+                  >
+                    📊 View Counters
+                  </button>
+                  <button
+                    onClick={handleResetCounters}
+                    className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm"
+                    title="Reset all counters"
+                  >
+                    🔄 Reset Counters
+                  </button>
                   <button
                     onClick={() => {
                       setEditableData([...data]);
@@ -1104,7 +1248,6 @@ const CertificateGenerator: React.FC = () => {
                   </button>
                 </div>
 
-                {/* Download buttons */}
                 <div className="grid grid-cols-3 gap-4">
                   <button 
                     onClick={handleDownloadCurrent} 
@@ -1279,7 +1422,6 @@ const CertificateGenerator: React.FC = () => {
             </div>
 
             <div className="space-y-4">
-              {/* Filter Conditions */}
               <div className="space-y-3">
                 {tempFilterConditions.length === 0 ? (
                   <div className="text-center text-gray-500 py-4 bg-gray-50 rounded-lg">
@@ -1329,7 +1471,6 @@ const CertificateGenerator: React.FC = () => {
                                 placeholder="Type to search..."
                               />
                               
-                              {/* Value suggestions */}
                               {condition.value && (
                                 <ul className="absolute z-10 w-full mt-1 bg-white border rounded-lg shadow-lg max-h-40 overflow-auto">
                                   {Array.from(new Set(
@@ -1364,7 +1505,6 @@ const CertificateGenerator: React.FC = () => {
                 )}
               </div>
 
-              {/* Add Filter Button */}
               <button
                 onClick={handleAddFilterCondition}
                 className="w-full px-4 py-2 border-2 border-dashed border-purple-300 text-purple-600 rounded-lg hover:bg-purple-50 transition-colors"
@@ -1372,7 +1512,6 @@ const CertificateGenerator: React.FC = () => {
                 + Add Another Filter
               </button>
 
-              {/* Preview of matched records */}
               {tempFilterConditions.some(c => c.column && c.value) && (
                 <div className="mt-4 p-4 bg-purple-50 rounded-lg">
                   <div className="flex justify-between items-center">
@@ -1396,7 +1535,6 @@ const CertificateGenerator: React.FC = () => {
                     )}
                   </div>
                   
-                  {/* Preview of first few filtered records */}
                   {filteredData.length > 0 && (
                     <div className="mt-3 max-h-40 overflow-auto bg-white rounded border">
                       <table className="min-w-full text-xs">
@@ -1441,7 +1579,6 @@ const CertificateGenerator: React.FC = () => {
                 </div>
               )}
 
-              {/* Active Filters Indicator */}
               {filterConditions.length > 0 && (
                 <div className="mt-4 p-3 bg-blue-50 rounded-lg">
                   <div className="flex justify-between items-center mb-2">
@@ -1466,7 +1603,6 @@ const CertificateGenerator: React.FC = () => {
               )}
             </div>
 
-            {/* Modal Actions */}
             <div className="flex gap-3 mt-6">
               <button
                 onClick={() => {
@@ -1515,7 +1651,6 @@ const CertificateGenerator: React.FC = () => {
               </button>
             </div>
 
-            {/* Data Table */}
             <div className="overflow-x-auto mb-4">
               <table className="min-w-full border-collapse border border-gray-300">
                 <thead className="bg-gray-100 sticky top-0">
@@ -1525,7 +1660,6 @@ const CertificateGenerator: React.FC = () => {
                         {col}
                         <button
                           onClick={() => {
-                            // Add new column
                             const newCol = prompt("Enter new column name:");
                             if (newCol && !excelColumns.includes(newCol)) {
                               const updatedColumns = [...excelColumns, newCol];
@@ -1550,7 +1684,6 @@ const CertificateGenerator: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {/* Existing rows */}
                   {editableData.map((row, rowIndex) => (
                     <tr key={rowIndex} className="hover:bg-gray-50">
                       {excelColumns.map((col) => (
@@ -1585,7 +1718,6 @@ const CertificateGenerator: React.FC = () => {
                     </tr>
                   ))}
                   
-                  {/* New row input */}
                   <tr className="bg-blue-50">
                     {excelColumns.map((col) => (
                       <td key={col} className="border border-gray-300 px-4 py-2">
@@ -1606,7 +1738,6 @@ const CertificateGenerator: React.FC = () => {
                     <td className="border border-gray-300 px-4 py-2 text-center">
                       <button
                         onClick={() => {
-                          // Check if any field is filled
                           if (Object.keys(newRowData).length > 0) {
                             setEditableData([...editableData, newRowData]);
                             setNewRowData({});
@@ -1623,7 +1754,6 @@ const CertificateGenerator: React.FC = () => {
               </table>
             </div>
 
-            {/* Bulk Add Options */}
             <div className="grid grid-cols-2 gap-4 mb-4">
               <div>
                 <h4 className="font-semibold mb-2">Bulk Add Records</h4>
@@ -1694,11 +1824,9 @@ const CertificateGenerator: React.FC = () => {
               </div>
             </div>
 
-            {/* Modal Actions */}
             <div className="flex gap-3 justify-end mt-6">
               <button
                 onClick={() => {
-                  // Save changes
                   setData(editableData);
                   setRangeEnd(editableData.length);
                   saveExcelData(editableData, excelColumns);
