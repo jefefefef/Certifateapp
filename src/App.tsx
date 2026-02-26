@@ -406,38 +406,32 @@ const CertificateGenerator: React.FC = () => {
       const html = result.value;
       setDocxHtml(html);
 
+      // Create a new zip and extract ALL text from the document
       const zip = new PizZip(arrayBuffer);
-      const doc = new Docxtemplater(zip, {
-        paragraphLoop: true,
-        linebreaks: true,
+      
+      // Get ALL XML files that might contain text
+      const allXmlFiles = Object.keys(zip.files).filter(file => 
+        file.endsWith('.xml')
+      );
+      
+      console.log("📁 All XML files:", allXmlFiles);
+      
+      // Extract text from all XML files
+      let fullText = '';
+      allXmlFiles.forEach(filename => {
+        const fileContent = zip.files[filename].asText();
+        fullText += ' ' + fileContent;
       });
-
-      const text = doc.getFullText();
-      console.log("📄 Raw document text:", text);
       
-      // Try different regex patterns to see what works
-      const regex1 = /\{([^}]+)\}/g;
-      const regex2 = /\{\{([^}]+)\}\}/g;
-      const regex3 = /\[([^\]]+)\]/g;
-      
+      // Simple regex to find all placeholders
+      const placeholderRegex = /\{([^}]+)\}/g;
       const found = new Set<string>();
       let match;
       
-      console.log("🔍 Testing regex patterns...");
-      
-      while ((match = regex1.exec(text)) !== null) {
-        console.log("✅ Found {placeholder}:", match[1]);
-        found.add(match[1]);
-      }
-      
-      while ((match = regex2.exec(text)) !== null) {
-        console.log("✅ Found {{placeholder}}:", match[1]);
-        found.add(match[1]);
-      }
-      
-      while ((match = regex3.exec(text)) !== null) {
-        console.log("✅ Found [placeholder]:", match[1]);
-        found.add(match[1]);
+      while ((match = placeholderRegex.exec(fullText)) !== null) {
+        const placeholder = match[1].trim();
+        console.log(`✅ Found placeholder: "${placeholder}"`);
+        found.add(placeholder);
       }
 
       const foundPlaceholders = Array.from(found);
@@ -673,7 +667,8 @@ const CertificateGenerator: React.FC = () => {
           console.log(`✅ Mapped ${placeholder} to uppercase:`, templateData[placeholder]);
         }
       }
-      else if (placeholder.includes("-DATE_ISO") || placeholder.endsWith("DATE_ISO")) {
+      // Check for DATE_ISO in ANY form (with hyphen or underscore)
+      else if (placeholder.includes("DATE_ISO") || placeholder.includes("DATE-ISO")) {
         console.log(`🎯 Found DATE_ISO placeholder: ${placeholder} -> using cert number: ${certNumber}`);
         templateData[placeholder] = certNumber;
       }

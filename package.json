@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@tailwindcss/postcss": "^4.1.18",
-    "docxtemplater": "^3.67.6",
+    "docxtemplater": "^3.68.3",
     "file-saver": "^2.0.5",
     "lucide-react": "^0.559.0",
     "mammoth": "^1.11.0",
