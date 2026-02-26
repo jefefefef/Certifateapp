@@ -94,43 +94,47 @@ const saveCounters = (counters: DownloadCounter[]): void => {
 };
 
 const getNextCertificateNumber = (
-  templateId: string,
-  templateName: string
-): string => {
-  const counters = loadCounters();
-  const now = new Date();
-  const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-  
-  const existingCounter = counters.find(
-    c => c.templateId === templateId && c.monthKey === monthKey
-  );
-  
-  let nextCount = 1;
-  
-  if (existingCounter) {
-    nextCount = existingCounter.count + 1;
-    existingCounter.count = nextCount;
-  } else {
-    counters.push({
-      templateId,
-      templateName,
-      monthKey,
-      count: 1
-    });
-  }
-  
-  const threeMonthsAgo = new Date();
-  threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
-  const threeMonthsAgoKey = `${threeMonthsAgo.getFullYear()}-${String(threeMonthsAgo.getMonth() + 1).padStart(2, '0')}`;
-  
-  const filteredCounters = counters.filter(c => 
-    c.templateId === templateId ? c.monthKey >= threeMonthsAgoKey : true
-  );
-  
-  saveCounters(filteredCounters);
-  
-  return `${monthKey}-${String(nextCount).padStart(2, '0')}`;
-};
+    templateId: string,
+    templateName: string,
+    prefix: string = ''
+  ): string => {
+    const counters = loadCounters();
+    const now = new Date();
+    const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    
+    // Create unique key combining templateId and prefix
+    const uniqueKey = prefix ? `${templateId}_${prefix}` : templateId;
+    
+    const existingCounter = counters.find(
+      c => c.templateId === uniqueKey && c.monthKey === monthKey
+    );
+    
+    let nextCount = 1;
+    
+    if (existingCounter) {
+      nextCount = existingCounter.count + 1;
+      existingCounter.count = nextCount;
+    } else {
+      counters.push({
+        templateId: uniqueKey,
+        templateName: prefix ? `${templateName}_${prefix}` : templateName,
+        monthKey,
+        count: 1
+      });
+    }
+    
+    const threeMonthsAgo = new Date();
+    threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+    const threeMonthsAgoKey = `${threeMonthsAgo.getFullYear()}-${String(threeMonthsAgo.getMonth() + 1).padStart(2, '0')}`;
+    
+    const filteredCounters = counters.filter(c => 
+      c.templateId === uniqueKey ? c.monthKey >= threeMonthsAgoKey : true
+    );
+    
+    saveCounters(filteredCounters);
+    
+    return `${monthKey}-${String(nextCount).padStart(2, '0')}`;
+  };
 
 const openDB = (): Promise<IDBDatabase> => {
   return new Promise((resolve, reject) => {
@@ -399,53 +403,39 @@ const CertificateGenerator: React.FC = () => {
     try {
       const arrayBuffer = await file.arrayBuffer();
       setDocxBinary(arrayBuffer);
-
-      const result = await mammoth.convertToHtml({
-        arrayBuffer: arrayBuffer.slice(0),
-      });
+      
+      // Convert to HTML for preview
+      const result = await mammoth.convertToHtml({ arrayBuffer: arrayBuffer.slice(0) });
       const html = result.value;
       setDocxHtml(html);
-
-      // Create a new zip and extract ALL text from the document
+      
+      // Extract placeholders
       const zip = new PizZip(arrayBuffer);
-      
-      // Get ALL XML files that might contain text
-      const allXmlFiles = Object.keys(zip.files).filter(file => 
-        file.endsWith('.xml')
-      );
-      
-      console.log("📁 All XML files:", allXmlFiles);
-      
-      // Extract text from all XML files
-      let fullText = '';
-      allXmlFiles.forEach(filename => {
-        const fileContent = zip.files[filename].asText();
-        fullText += ' ' + fileContent;
+      const doc = new Docxtemplater(zip, {
+        paragraphLoop: true,
+        linebreaks: true,
       });
       
-      // Simple regex to find all placeholders
-      const placeholderRegex = /\{([^}]+)\}/g;
+      const text = doc.getFullText();
+      const placeholderRegex = /\{(\w+)\}|\{\{(\w+)\}\}|\[(\w+)\]/g;
       const found = new Set<string>();
       let match;
       
-      while ((match = placeholderRegex.exec(fullText)) !== null) {
-        const placeholder = match[1].trim();
-        console.log(`✅ Found placeholder: "${placeholder}"`);
-        found.add(placeholder);
+      while ((match = placeholderRegex.exec(text)) !== null) {
+        const placeholder = match[1] || match[2] || match[3];
+        if (placeholder) found.add(placeholder);
       }
-
-      const foundPlaceholders = Array.from(found);
-      console.log("📋 All found placeholders:", foundPlaceholders);
       
+      const foundPlaceholders = Array.from(found);
       setPlaceholders(foundPlaceholders);
-      setUploadStatus((prev) => ({ ...prev, docx: true }));
+      setUploadStatus(prev => ({ ...prev, docx: true }));
       setSelectedTemplateId(null);
-
-      setTemplateName(file.name.replace(".docx", ""));
+      
+      setTemplateName(file.name.replace('.docx', ''));
       setShowSaveDialog(true);
     } catch (error) {
-      console.error("Error reading DOCX:", error);
-      alert("Error reading DOCX file. Please try again.");
+      console.error('Error reading DOCX:', error);
+      alert('Error reading DOCX file. Please try again.');
     }
   };
 
@@ -667,9 +657,26 @@ const CertificateGenerator: React.FC = () => {
           console.log(`✅ Mapped ${placeholder} to uppercase:`, templateData[placeholder]);
         }
       }
-      // Check for DATE_ISO in ANY form (with hyphen or underscore)
-      else if (placeholder.includes("DATE_ISO") || placeholder.includes("DATE-ISO")) {
-        console.log(`🎯 Found DATE_ISO placeholder: ${placeholder} -> using cert number: ${certNumber}`);
+      // Check if placeholder ends with -DATE_ISO or _DATE_ISO (case insensitive)
+      const upperPlaceholder = placeholder.toUpperCase();
+      if (upperPlaceholder.endsWith("-DATE_ISO") || upperPlaceholder.endsWith("_DATE_ISO")) {
+        // Extract the prefix (everything before -DATE_ISO or _DATE_ISO)
+        const prefix = placeholder
+          .replace(/[-–]DATE_ISO$/i, '')
+          .replace(/[_]DATE_ISO$/i, '')
+          .toUpperCase();
+        
+        // Get certificate number for this specific prefix
+        const certNumber = getNextCertificateNumber(
+          selectedTemplateId || 'temp_' + Date.now(),
+          templateName,
+          prefix
+        );
+        
+        console.log(`🎯 Found DATE_ISO placeholder: ${placeholder} (prefix: ${prefix}) -> ${certNumber}`);
+        console.log("🔎 DATE_ISO triggered for:", placeholder);
+        console.log("🔎 Prefix:", prefix);
+        console.log("🔎 Generated number:", certNumber);
         templateData[placeholder] = certNumber;
       }
       else {
