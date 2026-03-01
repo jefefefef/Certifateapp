@@ -67,7 +67,7 @@ npm install
 3. **Start the development server**
 npm run dev
 
-📖 How to Use
+### 📖 How to Use
 Step 1: Upload a DOCX Template
 Click the "Upload DOCX Template" area
 
@@ -95,7 +95,7 @@ Download Range - specify a range of records
 
 Download All - all records at once
 
-🎯 Advanced Features
+### 🎯 Advanced Features
 Editing Excel Data
 Click "Edit Excel Data" button
 
@@ -191,15 +191,16 @@ templateId,templateName,monthKey,count
 template_123,Training Certificate,2026-03,5
 template_123,Training Certificate,2026-02,12
 template_456,Completion Certificate,2026-03,3
-🌐 Browser Support
-Feature	Chrome	Edge	Firefox	Safari
+
+### 🌐 Browser Support
+Feature	Chrome	    Edge	Firefox	Safari
 Basic functionality	✅	✅	✅	✅
 Direct file saving	✅	✅	❌	❌
-IndexedDB	✅	✅	✅	✅
-Print	✅	✅	✅	✅
+IndexedDB         	✅	✅	✅	✅
+Print	              ✅	✅	✅	✅
 📁 Project Structure
 text
-certificate-generator/
+certifateapp/
 ├── src/
 │   ├── App.tsx              # Main application component
 │   ├── main.tsx             # Entry point
@@ -223,10 +224,10 @@ VITE_APP_VERSION=1.0.0
 Database Version
 The app uses IndexedDB with version control. Update DB_VERSION in App.tsx when making structural changes:
 
-typescript
-const DB_VERSION = 2; // Increment when changing schema
+### typescript
+** const DB_VERSION = 2; // Increment when changing schema
 
-📞 Support
+### 📞 Support
 For issues or questions:
 
 Check the Issues page
@@ -237,7 +238,7 @@ Include browser console logs when reporting bugs
 
 Specify your browser and operating system
 
-🚧 Known Limitations
+### 🚧 Known Limitations
 Direct file saving only works in Chromium-based browsers (Chrome, Edge, Opera)
 
 Large Excel files (>10MB) may cause performance issues
@@ -248,7 +249,7 @@ Counters reset when clearing browser data
 
 File handles are lost when closing the browser tab (need to re-enable direct save)
 
-🔜 Roadmap
+### 🔜 Roadmap
 Planned Features
 Dark mode support
 
@@ -283,7 +284,7 @@ More placeholder modifiers
 
 Template categories/tags
 
-📊 Performance Tips
+### 📊 Performance Tips
 Keep Excel files under 10MB for optimal performance
 
 Use simple DOCX templates without complex tables or images
@@ -294,7 +295,7 @@ Use filtering to work with subsets of large datasets
 
 Chrome/Edge recommended for direct file saving feature
 
-🎯 Use Cases
+### 🎯 Use Cases
 Educational institutions - Generate certificates for graduates
 
 Corporate training - Issue completion certificates
@@ -305,7 +306,7 @@ HR departments - Generate employment verification letters
 
 Any batch document generation from template + data
 
-💡 Tips & Tricks
+### 💡 Tips & Tricks
 Template Design: Create your DOCX with placeholders like {name}, {date}, {course}
 
 Excel Columns: Match column names exactly to placeholders (case-insensitive)
@@ -318,4 +319,4 @@ Filtering: Combine multiple conditions for precise record selection
 
 Direct Save: Enable in Chrome/Edge for seamless workflow
 
-Made with ❤️ for batch certificate generation
+# Made with ❤️ for batch certificate generation
