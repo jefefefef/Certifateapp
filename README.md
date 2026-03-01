@@ -1,6 +1,3 @@
-Here's your beautifully styled README.md:
-
-```markdown
 <div align="center">
   
 # 🎓 Certificate Generator
@@ -95,10 +92,10 @@ Here's your beautifully styled README.md:
 ## 🚀 Getting Started
 
 ### Prerequisites
-```
+
 Node.js (v14 or higher)
 npm or yarn
-```
+
 
 ### Installation
 
