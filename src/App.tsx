@@ -15,6 +15,7 @@ import {
   Trash2,
   File,
   Filter,
+  Save,
 } from "lucide-react";
 
 interface CertificateData {
@@ -102,7 +103,6 @@ const getNextCertificateNumber = (
     const now = new Date();
     const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
     
-    // Create unique key combining templateId and prefix
     const uniqueKey = prefix ? `${templateId}_${prefix}` : templateId;
     
     const existingCounter = counters.find(
@@ -284,6 +284,10 @@ const CertificateGenerator: React.FC = () => {
   const certRef = useRef<HTMLDivElement>(null);
   const excelInputRef = useRef<HTMLInputElement>(null);
   
+  // File System Access API handle
+  const [excelFileHandle, setExcelFileHandle] = useState<FileSystemFileHandle | null>(null);
+  const [originalFileName, setOriginalFileName] = useState<string>("");
+  
   const [filterColumn, setFilterColumn] = useState<string>("");
   const [filterValue, setFilterValue] = useState<string>("");
   const [uniqueValues, setUniqueValues] = useState<string[]>([]);
@@ -404,12 +408,10 @@ const CertificateGenerator: React.FC = () => {
       const arrayBuffer = await file.arrayBuffer();
       setDocxBinary(arrayBuffer);
       
-      // Convert to HTML for preview
       const result = await mammoth.convertToHtml({ arrayBuffer: arrayBuffer.slice(0) });
       const html = result.value;
       setDocxHtml(html);
       
-      // Extract placeholders
       const zip = new PizZip(arrayBuffer);
       const doc = new Docxtemplater(zip, {
         paragraphLoop: true,
@@ -533,6 +535,8 @@ const CertificateGenerator: React.FC = () => {
       setTempFilterConditions([]);
       setEditableData([]);
       setNewRowData({});
+      setExcelFileHandle(null);
+      setOriginalFileName("");
       if (excelInputRef.current) {
         excelInputRef.current.value = "";
       }
@@ -546,44 +550,157 @@ const CertificateGenerator: React.FC = () => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = async (evt) => {
-      try {
-        const bstr = evt.target?.result;
-        const wb = XLSX.read(bstr, { type: "binary" });
-        const wsname = wb.SheetNames[0];
-        const ws = wb.Sheets[wsname];
-        const jsonData = XLSX.utils.sheet_to_json(ws) as CertificateData[];
+    try {
+      // Store original filename
+      setOriginalFileName(file.name);
+      
+      // Reset file handle when uploading new file
+      setExcelFileHandle(null);
 
-        if (jsonData.length > 0) {
-          const processedData = processExcelData(jsonData);
-          const columns = Object.keys(jsonData[0]);
+      // Parse the file as usual
+      const reader = new FileReader();
+      reader.onload = async (evt) => {
+        try {
+          const bstr = evt.target?.result;
+          const wb = XLSX.read(bstr, { type: "binary" });
+          const wsname = wb.SheetNames[0];
+          const ws = wb.Sheets[wsname];
+          const jsonData = XLSX.utils.sheet_to_json(ws) as CertificateData[];
 
-          setData(processedData);
-          setEditableData(processedData);
-          setExcelColumns(columns);
-          setCurrentIndex(0);
-          setRangeEnd(processedData.length);
-          setUploadStatus((prev) => ({ ...prev, excel: true }));
+          if (jsonData.length > 0) {
+            const processedData = processExcelData(jsonData);
+            const columns = Object.keys(jsonData[0]);
 
-          setIsFiltered(false);
-          setFilterColumn("");
-          setFilterValue("");
-          setFilteredData([]);
-          setFilterConditions([]);
-          setTempFilterConditions([]);
+            setData(processedData);
+            setEditableData(processedData);
+            setExcelColumns(columns);
+            setCurrentIndex(0);
+            setRangeEnd(processedData.length);
+            setUploadStatus((prev) => ({ ...prev, excel: true }));
 
-          await saveExcelData(processedData, columns);
-          console.log(
-            `✅ Loaded and saved Excel: ${processedData.length} records`,
-          );
+            setIsFiltered(false);
+            setFilterColumn("");
+            setFilterValue("");
+            setFilteredData([]);
+            setFilterConditions([]);
+            setTempFilterConditions([]);
+
+            await saveExcelData(processedData, columns);
+            console.log(
+              `✅ Loaded and saved Excel: ${processedData.length} records`,
+            );
+          }
+        } catch (error) {
+          console.error("Error reading Excel:", error);
+          alert("Error reading Excel file. Please try again.");
         }
-      } catch (error) {
-        console.error("Error reading Excel:", error);
-        alert("Error reading Excel file. Please try again.");
+      };
+      reader.readAsBinaryString(file);
+    } catch (error) {
+      console.error("Error in Excel upload:", error);
+      alert("Error uploading Excel file.");
+    }
+  };
+
+  // Request write permission for direct file saving
+  const handleRequestWritePermission = async () => {
+    try {
+      if (!('showOpenFilePicker' in window)) {
+        alert("Your browser doesn't support direct file saving. Please use the download option instead.");
+        return;
       }
-    };
-    reader.readAsBinaryString(file);
+
+      // Ask user to select the same file again (this time for write permission)
+      const [handle] = await window.showOpenFilePicker({
+        startIn: 'documents',
+        suggestedName: originalFileName,
+        types: [{
+          description: 'Excel Files',
+          accept: {
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
+            'application/vnd.ms-excel': ['.xls']
+          }
+        }]
+      });
+      
+      // Request write permission
+      const permission = await handle.requestPermission({ mode: 'readwrite' });
+      
+      if (permission === 'granted') {
+        setExcelFileHandle(handle);
+        alert(`✅ Write access granted for: ${originalFileName}`);
+      } else {
+        alert("Write permission denied. You can still download the file.");
+      }
+    } catch (error) {
+      console.log("Permission request cancelled or failed:", error);
+    }
+  };
+
+  // Helper function to convert string to array buffer
+  const s2ab = (s: string) => {
+    const buf = new ArrayBuffer(s.length);
+    const view = new Uint8Array(buf);
+    for (let i = 0; i < s.length; i++) view[i] = s.charCodeAt(i) & 0xFF;
+    return buf;
+  };
+
+  // Save changes using File System Access API
+  const handleSaveExcelChanges = async () => {
+    try {
+      // Create Excel file from edited data
+      const ws = XLSX.utils.json_to_sheet(editableData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+      const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'binary' });
+      const buffer = s2ab(wbout);
+
+      if (excelFileHandle && 'showSaveFilePicker' in window) {
+        // We have a file handle - try to save directly to original file
+        try {
+          // Verify we still have permission
+          const permission = await excelFileHandle.queryPermission({ mode: 'readwrite' });
+          
+          if (permission === 'granted') {
+            // Write directly to the original file
+            const writable = await excelFileHandle.createWritable();
+            await writable.write(buffer);
+            await writable.close();
+            
+            alert(`✅ File saved directly to: ${originalFileName}`);
+          } else {
+            // Need to request permission again
+            const newPermission = await excelFileHandle.requestPermission({ mode: 'readwrite' });
+            if (newPermission === 'granted') {
+              const writable = await excelFileHandle.createWritable();
+              await writable.write(buffer);
+              await writable.close();
+              alert(`✅ File saved directly to: ${originalFileName}`);
+            } else {
+              throw new Error('Permission denied');
+            }
+          }
+        } catch (writeError) {
+          console.error("Write error:", writeError);
+          // Fallback to download
+          XLSX.writeFile(wb, originalFileName || 'data.xlsx');
+          alert(`⚠️ Could not save directly. File downloaded instead.`);
+        }
+      } else {
+        // No file handle - use download
+        XLSX.writeFile(wb, originalFileName || 'data.xlsx');
+        alert(`✅ File downloaded as: ${originalFileName || 'data.xlsx'}`);
+      }
+
+      // Update app data regardless
+      setData(editableData);
+      await saveExcelData(editableData, excelColumns);
+      setShowExcelEditor(false);
+
+    } catch (error) {
+      console.error("Error saving Excel:", error);
+      alert("Error saving file. Please try again.");
+    }
   };
 
   const mergeCertificate = (
@@ -674,9 +791,6 @@ const CertificateGenerator: React.FC = () => {
         );
         
         console.log(`🎯 Found DATE_ISO placeholder: ${placeholder} (prefix: ${prefix}) -> ${certNumber}`);
-        console.log("🔎 DATE_ISO triggered for:", placeholder);
-        console.log("🔎 Prefix:", prefix);
-        console.log("🔎 Generated number:", certNumber);
         templateData[placeholder] = certNumber;
       }
       else {
@@ -1653,6 +1767,38 @@ const CertificateGenerator: React.FC = () => {
               </button>
             </div>
 
+            {/* File info with permission button */}
+            <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-blue-700">
+                  <FileSpreadsheet className="w-5 h-5" />
+                  <span className="font-medium">Editing: {originalFileName}</span>
+                </div>
+                
+                {/* Add this button to request write permission */}
+                {!excelFileHandle && 'showOpenFilePicker' in window && (
+                  <button
+                    onClick={handleRequestWritePermission}
+                    className="flex items-center gap-2 px-3 py-1 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700"
+                  >
+                    <Save className="w-4 h-4" />
+                    Enable Direct Save
+                  </button>
+                )}
+              </div>
+              
+              {excelFileHandle ? (
+                <p className="text-xs text-green-600 mt-1 flex items-center gap-1">
+                  <Check className="w-3 h-3" />
+                  Write access granted - changes will save directly to original file
+                </p>
+              ) : (
+                <p className="text-xs text-gray-500 mt-1">
+                  Click "Enable Direct Save" to save changes directly to your original file
+                </p>
+              )}
+            </div>
+
             <div className="overflow-x-auto mb-4">
               <table className="min-w-full border-collapse border border-gray-300">
                 <thead className="bg-gray-100 sticky top-0">
@@ -1826,31 +1972,53 @@ const CertificateGenerator: React.FC = () => {
               </div>
             </div>
 
+            {/* Modal Actions */}
             <div className="flex gap-3 justify-end mt-6">
-              <button
-                onClick={() => {
-                  setData(editableData);
-                  setRangeEnd(editableData.length);
-                  saveExcelData(editableData, excelColumns);
-                  setShowExcelEditor(false);
-                  alert("Excel data updated successfully!");
-                }}
-                className="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
-              >
-                Save Changes
-              </button>
-              <button
-                onClick={() => {
-                  if (confirm("Discard all changes?")) {
-                    setEditableData(data);
-                    setNewRowData({});
-                    setShowExcelEditor(false);
-                  }
-                }}
-                className="px-6 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
-              >
-                Cancel
-              </button>
+              {excelFileHandle ? (
+                <>
+                  <button
+                    onClick={handleSaveExcelChanges}
+                    className="flex items-center gap-2 px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
+                  >
+                    <Save className="w-4 h-4" />
+                    Save to Original File
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (confirm("Discard all changes?")) {
+                        setEditableData(data);
+                        setNewRowData({});
+                        setShowExcelEditor(false);
+                      }
+                    }}
+                    className="px-6 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    onClick={handleSaveExcelChanges}
+                    className="flex items-center gap-2 px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                  >
+                    <Download className="w-4 h-4" />
+                    Download Updated File
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (confirm("Discard all changes?")) {
+                        setEditableData(data);
+                        setNewRowData({});
+                        setShowExcelEditor(false);
+                      }
+                    }}
+                    className="px-6 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
+                  >
+                    Cancel
+                  </button>
+                </>
+              )}
             </div>
           </div>
         </div>
