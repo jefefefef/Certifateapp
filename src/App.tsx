@@ -314,7 +314,14 @@ const CertificateGenerator: React.FC = () => {
           const first = templates[0];
           setDocxHtml(first.html);
           setDocxBinary(base64ToArrayBuffer(first.binary));
-          setPlaceholders(first.placeholders);
+          
+          // Clean placeholders when loading
+          const cleanedPlaceholders = first.placeholders
+            .map(p => p.replace(/<[^>]*>/g, '').trim())
+            .filter(p => p && p.length > 0 && p.length < 50)
+            .filter(p => !p.match(/^[0-9a-f]{8}[-]?[0-9a-f]{4}[-]?[0-9a-f]{4}[-]?[0-9a-f]{4}[-]?[0-9a-f]{12}$/i));
+          
+          setPlaceholders(cleanedPlaceholders);
           setUploadStatus((prev) => ({ ...prev, docx: true }));
           setSelectedTemplateId(first.id);
           console.log(`🎯 Auto-loaded template: ${first.name}`);
@@ -404,40 +411,112 @@ const CertificateGenerator: React.FC = () => {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    console.log("📄 Uploading DOCX file:", file.name, "Size:", file.size, "bytes");
+
     try {
       const arrayBuffer = await file.arrayBuffer();
+      console.log("✅ File read successfully, buffer size:", arrayBuffer.byteLength);
+      
       setDocxBinary(arrayBuffer);
       
-      const result = await mammoth.convertToHtml({ arrayBuffer: arrayBuffer.slice(0) });
-      const html = result.value;
-      setDocxHtml(html);
-      
-      const zip = new PizZip(arrayBuffer);
-      const doc = new Docxtemplater(zip, {
-        paragraphLoop: true,
-        linebreaks: true,
-      });
-      
-      const text = doc.getFullText();
-      const placeholderRegex = /\{(\w+)\}|\{\{(\w+)\}\}|\[(\w+)\]/g;
-      const found = new Set<string>();
-      let match;
-      
-      while ((match = placeholderRegex.exec(text)) !== null) {
-        const placeholder = match[1] || match[2] || match[3];
-        if (placeholder) found.add(placeholder);
+      // Generate HTML preview with mammoth
+      try {
+        console.log("🔄 Converting to HTML with mammoth...");
+        const result = await mammoth.convertToHtml({ arrayBuffer: arrayBuffer.slice(0) });
+        console.log("✅ Mammoth conversion successful");
+        setDocxHtml(result.value);
+      } catch (mammothError) {
+        console.warn("⚠️ Mammoth conversion failed:", mammothError);
+        setDocxHtml("<p>Preview not available</p>");
       }
       
-      const foundPlaceholders = Array.from(found);
-      setPlaceholders(foundPlaceholders);
+      // Extract placeholders by scanning all XML files
+      console.log("🔄 Scanning all XML files for placeholders...");
+      const zip = new PizZip(arrayBuffer);
+      const xmlFiles = Object.keys(zip.files).filter(f => f.endsWith('.xml'));
+      
+      const placeholderSet = new Set<string>();
+      
+      xmlFiles.forEach(filename => {
+        const content = zip.files[filename].asText();
+        
+        // Find all {placeholder} patterns
+        const matches = content.match(/\{([^}]+)\}/g) || [];
+        matches.forEach(match => {
+          let placeholder = match.replace(/{|}/g, '').trim();
+          
+          // Remove ALL XML tags
+          placeholder = placeholder.replace(/<[^>]*>/g, '').trim();
+          
+          // Split by XML tag boundaries that might have been removed
+          const parts = placeholder.split(/[\s<>]+/);
+          parts.forEach(part => {
+            // Clean each part
+            const cleanPart = part.replace(/[^a-zA-Z0-9_\-]/g, '').trim();
+            if (cleanPart && cleanPart.length > 1 && cleanPart.length < 50) {
+              // Skip UUIDs and random strings
+              if (!cleanPart.match(/^[0-9a-f]{8}[-]?[0-9a-f]{4}[-]?[0-9a-f]{4}[-]?[0-9a-f]{4}[-]?[0-9a-f]{12}$/i)) {
+                placeholderSet.add(cleanPart);
+              }
+            }
+          });
+        });
+        
+        // Also look for patterns that might be split across XML elements
+        const textParts = content.split(/<[^>]*>/);
+        textParts.forEach(part => {
+          // Look for DATE_ISO patterns
+          if (part.includes('DATE_ISO') || part.includes('-DATE_ISO')) {
+            const words = part.match(/[a-zA-Z0-9_\-]+/g) || [];
+            words.forEach(word => {
+              if (word.includes('DATE_ISO') || word.includes('-DATE_ISO')) {
+                placeholderSet.add(word);
+              }
+            });
+          }
+          
+          // Look for simple word placeholders
+          const words = part.match(/[a-zA-Z_]+/g) || [];
+          words.forEach(word => {
+            if (word.length > 1 && word.length < 30 && 
+                !word.match(/^[0-9]+$/) &&
+                !word.match(/^(w:|r:|t:|p:|xml|rsid)/i)) {
+              placeholderSet.add(word);
+            }
+          });
+        });
+      });
+      
+      // Convert Set to Array and do final cleanup
+      let foundPlaceholders = Array.from(placeholderSet)
+        .filter(p => p && p.length > 0)
+        .filter(p => !p.match(/^(w:|r:|t:|p:|m:|v:|a:|o:|d:|wp|pic|rel)/i)) // Remove XML namespace prefixes
+        .filter(p => !p.match(/^[0-9a-f]{8}[-]?[0-9a-f]{4}[-]?[0-9a-f]{4}[-]?[0-9a-f]{4}[-]?[0-9a-f]{12}$/i)); // Remove UUIDs
+      
+      // Sort by length (shorter first) to prioritize real placeholders
+      foundPlaceholders.sort((a, b) => a.length - b.length);
+      
+      // Remove any that are substrings of others (e.g., "DATE" vs "DATE_ISO")
+      const uniquePlaceholders: string[] = [];
+      foundPlaceholders.forEach(p => {
+        if (!uniquePlaceholders.some(existing => existing.includes(p) && existing !== p)) {
+          uniquePlaceholders.push(p);
+        }
+      });
+      
+      console.log("📋 Final cleaned placeholders:", uniquePlaceholders);
+      
+      setPlaceholders(uniquePlaceholders);
       setUploadStatus(prev => ({ ...prev, docx: true }));
       setSelectedTemplateId(null);
       
-      setTemplateName(file.name.replace('.docx', ''));
+      const baseName = file.name.replace(/\.docx$/i, '');
+      setTemplateName(baseName);
       setShowSaveDialog(true);
+      
     } catch (error) {
-      console.error('Error reading DOCX:', error);
-      alert('Error reading DOCX file. Please try again.');
+      console.error("❌ Fatal error reading DOCX:", error);
+      alert(`Error reading DOCX file: ${error.message}. Please check the file format and try again.`);
     }
   };
 
@@ -487,7 +566,14 @@ const CertificateGenerator: React.FC = () => {
   const handleLoadTemplate = (template: SavedTemplate) => {
     setDocxHtml(template.html);
     setDocxBinary(base64ToArrayBuffer(template.binary));
-    setPlaceholders(template.placeholders);
+    
+    // Clean the placeholders when loading from saved template
+    const cleanedPlaceholders = template.placeholders
+      .map(p => p.replace(/<[^>]*>/g, '').trim())
+      .filter(p => p && p.length > 0 && p.length < 50)
+      .filter(p => !p.match(/^[0-9a-f]{8}[-]?[0-9a-f]{4}[-]?[0-9a-f]{4}[-]?[0-9a-f]{4}[-]?[0-9a-f]{12}$/i));
+    
+    setPlaceholders(cleanedPlaceholders);
     setUploadStatus((prev) => ({ ...prev, docx: true }));
     setSelectedTemplateId(template.id);
   };
@@ -760,9 +846,11 @@ const CertificateGenerator: React.FC = () => {
     
     console.log("🔢 Generated certificate number:", certNumber);
 
+    // Process each placeholder
     placeholders.forEach((placeholder) => {
       console.log("🔍 Processing placeholder:", placeholder);
       
+      // Handle _UPPER suffix
       if (placeholder.endsWith("_UPPER")) {
         const baseName = placeholder.replace("_UPPER", "");
         const matchingKey = Object.keys(record).find(
@@ -774,29 +862,25 @@ const CertificateGenerator: React.FC = () => {
           console.log(`✅ Mapped ${placeholder} to uppercase:`, templateData[placeholder]);
         }
       }
-      // Check if placeholder ends with -DATE_ISO or _DATE_ISO (case insensitive)
-      const upperPlaceholder = placeholder.toUpperCase();
-      if (upperPlaceholder.endsWith("-DATE_ISO") || upperPlaceholder.endsWith("_DATE_ISO")) {
-        // Extract the prefix (everything before -DATE_ISO or _DATE_ISO)
-        const prefix = placeholder
-          .replace(/[-–]DATE_ISO$/i, '')
-          .replace(/[_]DATE_ISO$/i, '')
-          .toUpperCase();
-        
-        // Get certificate number for this specific prefix
-        const certNumber = getNextCertificateNumber(
-          selectedTemplateId || 'temp_' + Date.now(),
-          templateName,
-          prefix
-        );
-        
-        console.log(`🎯 Found DATE_ISO placeholder: ${placeholder} (prefix: ${prefix}) -> ${certNumber}`);
+      // Handle ANY placeholder that contains DATE_ISO (with underscore)
+      else if (placeholder.includes("DATE_ISO")) {
+        console.log(`🎯 Found DATE_ISO placeholder: ${placeholder} -> using cert number: ${certNumber}`);
         templateData[placeholder] = certNumber;
       }
+      // Regular placeholder from Excel data
       else {
-        const matchingKey = Object.keys(record).find(
-          (key) => key.toLowerCase() === placeholder.toLowerCase(),
+        // Try exact match first
+        let matchingKey = Object.keys(record).find(
+          (key) => key === placeholder
         );
+        
+        // If no exact match, try case-insensitive match
+        if (!matchingKey) {
+          matchingKey = Object.keys(record).find(
+            (key) => key.toLowerCase() === placeholder.toLowerCase()
+          );
+        }
+        
         if (matchingKey) {
           templateData[placeholder] = record[matchingKey]?.toString() || "";
           console.log(`✅ Mapped ${placeholder} to:`, templateData[placeholder]);
