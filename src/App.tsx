@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import * as XLSX from "xlsx";
 import mammoth from "mammoth";
 import Docxtemplater from "docxtemplater";
@@ -16,6 +16,22 @@ import {
   File,
   Filter,
   Save,
+  ChevronLeft,
+  ChevronDown,
+  FolderOpen,
+  Search,
+  X,
+  Plus,
+  Activity,
+  Tag,
+  Grid,
+  Edit2,
+  MoreVertical,
+  Copy,
+  ArrowUp,
+  ArrowDown,
+  RotateCcw,
+  RotateCw
 } from "lucide-react";
 
 interface CertificateData {
@@ -46,6 +62,21 @@ interface DownloadCounter {
   templateName: string;
   monthKey: string;
   count: number;
+}
+
+interface CellPosition {
+  row: number;
+  col: number;
+}
+
+interface EditHistory {
+  past: ExcelFileSnapshot[];
+  future: ExcelFileSnapshot[];
+}
+
+interface ExcelFileSnapshot {
+  data: CertificateData[];
+  columns: string[];
 }
 
 // Simple IndexedDB operations
@@ -261,6 +292,754 @@ const getExcelData = async (): Promise<{
   });
 };
 
+// Custom hook for click outside
+const useClickOutside = (ref: React.RefObject<HTMLElement>, handler: () => void) => {
+  React.useEffect(() => {
+    const listener = (event: MouseEvent | TouchEvent) => {
+      if (!ref.current || ref.current.contains(event.target as Node)) {
+        return;
+      }
+      handler();
+    };
+
+    document.addEventListener('mousedown', listener);
+    document.addEventListener('touchstart', listener);
+
+    return () => {
+      document.removeEventListener('mousedown', listener);
+      document.removeEventListener('touchstart', listener);
+    };
+  }, [ref, handler]);
+};
+
+// Column Header Component
+const ColumnHeader: React.FC<{
+  column: string;
+  index: number;
+  onEdit: () => void;
+  onDelete: () => void;
+  onInsertLeft: () => void;
+  onInsertRight: () => void;
+  menuOpen: boolean;
+  onMenuToggle: (open: boolean) => void;
+}> = ({ column, index, onEdit, onDelete, onInsertLeft, onInsertRight, menuOpen, onMenuToggle }) => {
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useClickOutside(menuRef, () => onMenuToggle(false));
+
+  return (
+    <th className="border border-gray-300 bg-gray-100 relative group">
+      <div className="flex items-center justify-between px-3 py-2">
+        <span className="font-medium text-sm">{column}</span>
+        <button
+          onClick={() => onMenuToggle(true)}
+          className="p-1 hover:bg-gray-200 rounded transition"
+          title="Column options"
+        >
+          <ChevronDown className="w-4 h-4" />
+        </button>
+      </div>
+
+      {menuOpen && (
+        <div ref={menuRef} className="absolute top-full left-0 mt-1 bg-white shadow-xl rounded-lg border py-1 z-50 min-w-[180px]">
+          <button
+            onClick={() => { onEdit(); onMenuToggle(false); }}
+            className="w-full px-4 py-2 text-left hover:bg-gray-50 flex items-center gap-2 text-sm"
+          >
+            <Edit2 className="w-4 h-4" /> Edit Column
+          </button>
+          <button
+            onClick={() => { onInsertLeft(); onMenuToggle(false); }}
+            className="w-full px-4 py-2 text-left hover:bg-gray-50 flex items-center gap-2 text-sm"
+          >
+            <Plus className="w-4 h-4" /> Insert Left
+          </button>
+          <button
+            onClick={() => { onInsertRight(); onMenuToggle(false); }}
+            className="w-full px-4 py-2 text-left hover:bg-gray-50 flex items-center gap-2 text-sm"
+          >
+            <Plus className="w-4 h-4" /> Insert Right
+          </button>
+          <div className="border-t my-1" />
+          <button
+            onClick={() => { onDelete(); onMenuToggle(false); }}
+            className="w-full px-4 py-2 text-left hover:bg-gray-50 text-red-600 flex items-center gap-2 text-sm"
+          >
+            <Trash2 className="w-4 h-4" /> Delete Column
+          </button>
+        </div>
+      )}
+    </th>
+  );
+};
+
+// Row Edit Modal
+const RowEditModal: React.FC<{
+  isOpen: boolean;
+  onClose: () => void;
+  row: CertificateData;
+  columns: string[];
+  onSave: (updatedRow: CertificateData) => void;
+}> = ({ isOpen, onClose, row, columns, onSave }) => {
+  const [editedRow, setEditedRow] = useState(row);
+  const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
+
+  useEffect(() => {
+    setEditedRow(row);
+    if (isOpen) {
+      setTimeout(() => inputRefs.current[0]?.focus(), 100);
+    }
+  }, [isOpen, row]);
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60]">
+      <div className="bg-white rounded-lg p-6 w-[500px] shadow-2xl">
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="text-xl font-bold">Edit Row</h3>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-700">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="space-y-4">
+          {columns.map((col, index) => (
+            <div key={col}>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                {col}
+              </label>
+              <input
+                ref={el => inputRefs.current[index] = el}
+                type="text"
+                value={editedRow[col]?.toString() || ''}
+                onChange={(e) => setEditedRow({ ...editedRow, [col]: e.target.value })}
+                className="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && index === columns.length - 1) {
+                    onSave(editedRow);
+                    onClose();
+                  } else if (e.key === 'Enter') {
+                    inputRefs.current[index + 1]?.focus();
+                  } else if (e.key === 'Escape') {
+                    onClose();
+                  }
+                }}
+              />
+            </div>
+          ))}
+        </div>
+
+        <div className="flex gap-3 mt-6">
+          <button
+            onClick={() => {
+              onSave(editedRow);
+              onClose();
+            }}
+            className="flex-1 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700"
+          >
+            Save Changes
+          </button>
+          <button
+            onClick={onClose}
+            className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Column Edit Modal
+const ColumnEditModal: React.FC<{
+  isOpen: boolean;
+  onClose: () => void;
+  columnName: string;
+  onSave: (newName: string) => void;
+}> = ({ isOpen, onClose, columnName, onSave }) => {
+  const [newName, setNewName] = useState(columnName);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      setNewName(columnName);
+      setTimeout(() => inputRef.current?.focus(), 100);
+    }
+  }, [isOpen, columnName]);
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60]">
+      <div className="bg-white rounded-lg p-6 w-[400px] shadow-2xl">
+        <h3 className="text-xl font-bold mb-4">Edit Column</h3>
+        
+        <div className="mb-4">
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            Column Name
+          </label>
+          <input
+            ref={inputRef}
+            type="text"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            className="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                onSave(newName);
+                onClose();
+              } else if (e.key === 'Escape') {
+                onClose();
+              }
+            }}
+          />
+        </div>
+
+        <div className="flex gap-3">
+          <button
+            onClick={() => {
+              onSave(newName);
+              onClose();
+            }}
+            className="flex-1 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700"
+          >
+            Save
+          </button>
+          <button
+            onClick={onClose}
+            className="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Table Row Component
+const TableRow: React.FC<{
+  row: CertificateData;
+  rowIndex: number;
+  columns: string[];
+  onEditRow: () => void;
+  onDeleteRow: () => void;
+  onDuplicateRow: () => void;
+  onInsertAbove: () => void;
+  onInsertBelow: () => void;
+  menuOpen: boolean;
+  onMenuToggle: (open: boolean) => void;
+}> = ({
+  row,
+  rowIndex,
+  columns,
+  onEditRow,
+  onDeleteRow,
+  onDuplicateRow,
+  onInsertAbove,
+  onInsertBelow,
+  menuOpen,
+  onMenuToggle
+}) => {
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useClickOutside(menuRef, () => onMenuToggle(false));
+
+  return (
+    <tr className="group hover:bg-gray-50">
+      <td className="border border-gray-300 px-2 py-2 text-center text-sm text-gray-500 bg-gray-50 w-12">
+        {rowIndex + 1}
+      </td>
+      
+      {columns.map((col) => (
+        <td key={col} className="border border-gray-300 px-3 py-2 text-sm">
+          {row[col]?.toString() || <span className="text-gray-400">—</span>}
+        </td>
+      ))}
+
+      <td className="border border-gray-300 px-2 py-1 text-center relative">
+        <div className="flex items-center justify-center gap-1">
+          <button
+            onClick={onEditRow}
+            className="p-1.5 text-blue-600 hover:bg-blue-50 rounded transition"
+            title="Edit row"
+          >
+            <Edit2 className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => onMenuToggle(!menuOpen)}
+            className="p-1.5 text-gray-600 hover:bg-gray-200 rounded transition"
+            title="Row options"
+          >
+            <MoreVertical className="w-4 h-4" />
+          </button>
+        </div>
+
+        {menuOpen && (
+          <div ref={menuRef} className="absolute right-0 mt-1 bg-white shadow-xl rounded-lg border py-1 z-50 min-w-[160px]">
+            <button
+              onClick={() => { onInsertAbove(); onMenuToggle(false); }}
+              className="w-full px-4 py-2 text-left hover:bg-gray-50 text-sm flex items-center gap-2"
+            >
+              <ArrowUp className="w-4 h-4" /> Insert Above
+            </button>
+            <button
+              onClick={() => { onInsertBelow(); onMenuToggle(false); }}
+              className="w-full px-4 py-2 text-left hover:bg-gray-50 text-sm flex items-center gap-2"
+            >
+              <ArrowDown className="w-4 h-4" /> Insert Below
+            </button>
+            <button
+              onClick={() => { onDuplicateRow(); onMenuToggle(false); }}
+              className="w-full px-4 py-2 text-left hover:bg-gray-50 text-sm flex items-center gap-2"
+            >
+              <Copy className="w-4 h-4" /> Duplicate Row
+            </button>
+            <div className="border-t my-1" />
+            <button
+              onClick={() => { onDeleteRow(); onMenuToggle(false); }}
+              className="w-full px-4 py-2 text-left hover:bg-gray-50 text-red-600 text-sm flex items-center gap-2"
+            >
+              <Trash2 className="w-4 h-4" /> Delete Row
+            </button>
+          </div>
+        )}
+      </td>
+    </tr>
+  );
+};
+
+// Empty Row Component
+const EmptyRow: React.FC<{
+  columns: string[];
+  onAdd: (newRow: CertificateData) => void;
+}> = ({ columns, onAdd }) => {
+  const [newRow, setNewRow] = useState<CertificateData>({});
+  const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
+
+  const handleAdd = () => {
+    if (Object.keys(newRow).length > 0) {
+      onAdd(newRow);
+      setNewRow({});
+      setTimeout(() => inputRefs.current[0]?.focus(), 0);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent, index: number) => {
+    if (e.key === 'Enter') {
+      if (index === columns.length - 1) {
+        handleAdd();
+      } else {
+        inputRefs.current[index + 1]?.focus();
+      }
+    } else if (e.key === 'Escape') {
+      setNewRow({});
+      inputRefs.current[0]?.focus();
+    }
+  };
+
+  return (
+    <tr className="bg-blue-50 group">
+      <td className="border border-gray-300 px-2 py-1 text-center text-sm text-gray-500 bg-gray-50">
+        <Plus className="w-4 h-4 inline text-green-600" />
+      </td>
+      {columns.map((col, index) => (
+        <td key={col} className="border border-gray-300 p-1">
+          <input
+            ref={el => inputRefs.current[index] = el}
+            type="text"
+            placeholder={`Enter ${col}`}
+            value={newRow[col]?.toString() || ''}
+            onChange={(e) => setNewRow({ ...newRow, [col]: e.target.value })}
+            onKeyDown={(e) => handleKeyDown(e, index)}
+            className="w-full px-2 py-1 border rounded focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+          />
+        </td>
+      ))}
+      <td className="border border-gray-300 px-2 py-1 text-center">
+        <button
+          onClick={handleAdd}
+          disabled={Object.keys(newRow).length === 0}
+          className={`p-1.5 rounded-full transition ${
+            Object.keys(newRow).length > 0
+              ? 'text-green-600 hover:bg-green-100'
+              : 'text-gray-400 cursor-not-allowed'
+          }`}
+          title="Add row"
+        >
+          <Check className="w-5 h-5" />
+        </button>
+      </td>
+    </tr>
+  );
+};
+
+// Main Excel Editor Modal
+const ExcelEditorModal: React.FC<{
+  isOpen: boolean;
+  onClose: () => void;
+  data: CertificateData[];
+  columns: string[];
+  fileName: string;
+  onSave: (data: CertificateData[], columns: string[]) => void;
+}> = ({ isOpen, onClose, data, columns, fileName, onSave }) => {
+  const [localData, setLocalData] = useState(data);
+  const [localColumns, setLocalColumns] = useState(columns);
+  const [history, setHistory] = useState<EditHistory>({ past: [], future: [] });
+  
+  // Modal states
+  const [editingRow, setEditingRow] = useState<{ index: number; data: CertificateData } | null>(null);
+  const [editingColumn, setEditingColumn] = useState<{ index: number; name: string } | null>(null);
+  const [columnMenu, setColumnMenu] = useState<{ col: number; open: boolean } | null>(null);
+  const [rowMenu, setRowMenu] = useState<{ row: number; open: boolean } | null>(null);
+
+  // Reset state when modal opens
+  useEffect(() => {
+    if (isOpen) {
+      setLocalData(data);
+      setLocalColumns(columns);
+      setHistory({ past: [], future: [] });
+    }
+  }, [isOpen, data, columns]);
+
+  const pushToHistory = (newData: CertificateData[], newColumns: string[]) => {
+    setHistory(prev => ({
+      past: [...prev.past, { data: localData, columns: localColumns }].slice(-2),
+      future: []
+    }));
+  };
+
+  const undo = () => {
+    if (history.past.length === 0) return;
+    const previous = history.past[history.past.length - 1];
+    setHistory(prev => ({
+      past: prev.past.slice(0, -1),
+      future: [{ data: localData, columns: localColumns }, ...prev.future],
+    }));
+    setLocalData(previous.data);
+    setLocalColumns(previous.columns);
+  };
+
+  const redo = () => {
+    if (history.future.length === 0) return;
+    const next = history.future[0];
+    setHistory(prev => ({
+      past: [...prev.past, { data: localData, columns: localColumns }],
+      future: prev.future.slice(1),
+    }));
+    setLocalData(next.data);
+    setLocalColumns(next.columns);
+  };
+
+  const handleAddRow = () => {
+    const newRow: CertificateData = {};
+    localColumns.forEach(col => newRow[col] = '');
+    const newData = [...localData, newRow];
+    pushToHistory(newData, localColumns);
+    setLocalData(newData);
+  };
+
+  const handleAddRowWithData = (newRow: CertificateData) => {
+    const newData = [...localData, newRow];
+    pushToHistory(newData, localColumns);
+    setLocalData(newData);
+  };
+
+  const handleDeleteRow = (rowIndex: number) => {
+    if (confirm('Delete this row?')) {
+      const newData = localData.filter((_, i) => i !== rowIndex);
+      pushToHistory(newData, localColumns);
+      setLocalData(newData);
+    }
+  };
+
+  const handleDuplicateRow = (rowIndex: number) => {
+    const rowToDuplicate = { ...localData[rowIndex] };
+    const newData = [
+      ...localData.slice(0, rowIndex + 1),
+      rowToDuplicate,
+      ...localData.slice(rowIndex + 1)
+    ];
+    pushToHistory(newData, localColumns);
+    setLocalData(newData);
+  };
+
+  const handleInsertRow = (rowIndex: number, position: 'above' | 'below') => {
+    const newRow: CertificateData = {};
+    localColumns.forEach(col => newRow[col] = '');
+    const insertIndex = position === 'above' ? rowIndex : rowIndex + 1;
+    const newData = [
+      ...localData.slice(0, insertIndex),
+      newRow,
+      ...localData.slice(insertIndex)
+    ];
+    pushToHistory(newData, localColumns);
+    setLocalData(newData);
+  };
+
+  const handleAddColumn = () => {
+    const newColName = prompt('Enter new column name:');
+    if (!newColName || localColumns.includes(newColName)) return;
+    
+    const newColumns = [...localColumns, newColName];
+    const newData = localData.map(row => ({
+      ...row,
+      [newColName]: ''
+    }));
+    
+    pushToHistory(newData, newColumns);
+    setLocalColumns(newColumns);
+    setLocalData(newData);
+  };
+
+  const handleDeleteColumn = (colIndex: number) => {
+    if (!confirm(`Delete column "${localColumns[colIndex]}"?`)) return;
+    
+    const colToDelete = localColumns[colIndex];
+    const newColumns = localColumns.filter((_, i) => i !== colIndex);
+    const newData = localData.map(row => {
+      const newRow = { ...row };
+      delete newRow[colToDelete];
+      return newRow;
+    });
+    
+    pushToHistory(newData, newColumns);
+    setLocalColumns(newColumns);
+    setLocalData(newData);
+  };
+
+  const handleInsertColumn = (colIndex: number, position: 'left' | 'right') => {
+    const newColName = prompt('Enter new column name:');
+    if (!newColName || localColumns.includes(newColName)) return;
+    
+    const insertIndex = position === 'left' ? colIndex : colIndex + 1;
+    const newColumns = [
+      ...localColumns.slice(0, insertIndex),
+      newColName,
+      ...localColumns.slice(insertIndex)
+    ];
+    
+    const newData = localData.map(row => ({
+      ...row,
+      [newColName]: ''
+    }));
+    
+    pushToHistory(newData, newColumns);
+    setLocalColumns(newColumns);
+    setLocalData(newData);
+  };
+
+  const handleEditRow = (rowIndex: number) => {
+    setEditingRow({ index: rowIndex, data: { ...localData[rowIndex] } });
+  };
+
+  const handleSaveRow = (updatedRow: CertificateData) => {
+    const newData = [...localData];
+    newData[editingRow!.index] = updatedRow;
+    pushToHistory(newData, localColumns);
+    setLocalData(newData);
+    setEditingRow(null);
+  };
+
+  const handleEditColumn = (colIndex: number) => {
+    setEditingColumn({ index: colIndex, name: localColumns[colIndex] });
+  };
+
+  const handleSaveColumn = (newName: string) => {
+    if (!newName || newName === editingColumn!.name) {
+      setEditingColumn(null);
+      return;
+    }
+
+    const oldName = localColumns[editingColumn!.index];
+    const newColumns = [...localColumns];
+    newColumns[editingColumn!.index] = newName;
+    
+    const newData = localData.map(row => {
+      const newRow = { ...row };
+      newRow[newName] = newRow[oldName];
+      delete newRow[oldName];
+      return newRow;
+    });
+    
+    pushToHistory(newData, newColumns);
+    setLocalColumns(newColumns);
+    setLocalData(newData);
+    setEditingColumn(null);
+  };
+
+  const handleSave = () => {
+    onSave(localData, localColumns);
+    onClose();
+  };
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!isOpen) return;
+      if (e.ctrlKey || e.metaKey) {
+        if (e.key === 'z' && !e.shiftKey) {
+          e.preventDefault();
+          undo();
+        }
+        if (e.key === 'y' || (e.key === 'z' && e.shiftKey)) {
+          e.preventDefault();
+          redo();
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, history]);
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-lg w-full max-w-6xl max-h-[90vh] flex flex-col shadow-2xl">
+        {/* Header */}
+        <div className="flex justify-between items-center p-4 border-b">
+          <div className="flex items-center gap-3">
+            <FileSpreadsheet className="w-6 h-6 text-blue-600" />
+            <div>
+              <h3 className="text-xl font-bold">Edit Excel Data</h3>
+              <p className="text-sm text-gray-500">{fileName} • {localData.length} rows • {localColumns.length} columns</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-700">
+            <X className="w-6 h-6" />
+          </button>
+        </div>
+
+        {/* Toolbar */}
+        <div className="flex items-center gap-2 p-2 border-b bg-gray-50">
+          <button
+            onClick={undo}
+            disabled={history.past.length === 0}
+            className="p-2 rounded hover:bg-gray-200 disabled:opacity-30 disabled:hover:bg-transparent"
+            title="Undo (Ctrl+Z)"
+          >
+            <RotateCcw className="w-5 h-5" />
+          </button>
+          <button
+            onClick={redo}
+            disabled={history.future.length === 0}
+            className="p-2 rounded hover:bg-gray-200 disabled:opacity-30 disabled:hover:bg-transparent"
+            title="Redo (Ctrl+Y)"
+          >
+            <RotateCw className="w-5 h-5" />
+          </button>
+          <div className="w-px h-6 bg-gray-300 mx-1" />
+          <button
+            onClick={handleAddRow}
+            className="flex items-center gap-1 px-3 py-1.5 bg-green-600 text-white rounded hover:bg-green-700 text-sm"
+          >
+            <Plus className="w-4 h-4" /> Add Row
+          </button>
+          <button
+            onClick={handleAddColumn}
+            className="flex items-center gap-1 px-3 py-1.5 bg-purple-600 text-white rounded hover:bg-purple-700 text-sm"
+          >
+            <Plus className="w-4 h-4" /> Add Column
+          </button>
+          <div className="flex-1" />
+          <div className="text-xs text-gray-500 flex items-center gap-3">
+            <span className="flex items-center gap-1">
+              <Edit2 className="w-4 h-4" /> Click edit buttons
+            </span>
+            <span className="flex items-center gap-1">
+              <kbd className="px-1.5 py-0.5 bg-gray-200 rounded text-xs">Ctrl+Z</kbd> undo
+            </span>
+            <span className="flex items-center gap-1">
+              <kbd className="px-1.5 py-0.5 bg-gray-200 rounded text-xs">Ctrl+Y</kbd> redo
+            </span>
+          </div>
+          <button
+            onClick={handleSave}
+            className="flex items-center gap-1 px-4 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700"
+          >
+            <Save className="w-4 h-4" /> Save
+          </button>
+        </div>
+
+        {/* Excel Grid */}
+        <div className="flex-1 overflow-auto p-4">
+          <table className="border-collapse border border-gray-300 w-full">
+            <thead>
+              <tr>
+                <th className="border border-gray-300 bg-gray-100 w-12 text-center">#</th>
+                {localColumns.map((col, index) => (
+                  <ColumnHeader
+                    key={col}
+                    column={col}
+                    index={index}
+                    onEdit={() => handleEditColumn(index)}
+                    onDelete={() => handleDeleteColumn(index)}
+                    onInsertLeft={() => handleInsertColumn(index, 'left')}
+                    onInsertRight={() => handleInsertColumn(index, 'right')}
+                    menuOpen={columnMenu?.col === index && columnMenu.open}
+                    onMenuToggle={(open) => setColumnMenu({ col: index, open })}
+                  />
+                ))}
+                <th className="border border-gray-300 bg-gray-100 w-20 text-center">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {localData.map((row, rowIndex) => (
+                <TableRow
+                  key={rowIndex}
+                  row={row}
+                  rowIndex={rowIndex}
+                  columns={localColumns}
+                  onEditRow={() => handleEditRow(rowIndex)}
+                  onDeleteRow={() => handleDeleteRow(rowIndex)}
+                  onDuplicateRow={() => handleDuplicateRow(rowIndex)}
+                  onInsertAbove={() => handleInsertRow(rowIndex, 'above')}
+                  onInsertBelow={() => handleInsertRow(rowIndex, 'below')}
+                  menuOpen={rowMenu?.row === rowIndex && rowMenu.open}
+                  onMenuToggle={(open) => setRowMenu({ row: rowIndex, open })}
+                />
+              ))}
+              <EmptyRow columns={localColumns} onAdd={handleAddRowWithData} />
+            </tbody>
+          </table>
+        </div>
+
+        {/* Bottom Bar */}
+        <div className="border-t p-3 bg-gray-50 flex justify-between items-center text-sm text-gray-600">
+          <div className="flex items-center gap-4">
+            <span className="flex items-center gap-1">
+              <Edit2 className="w-4 h-4" /> Click edit buttons to modify
+            </span>
+          </div>
+          <button onClick={onClose} className="px-4 py-1.5 border rounded hover:bg-gray-200">
+            Cancel
+          </button>
+        </div>
+      </div>
+
+      {/* Modals */}
+      <RowEditModal
+        isOpen={editingRow !== null}
+        onClose={() => setEditingRow(null)}
+        row={editingRow?.data || {}}
+        columns={localColumns}
+        onSave={handleSaveRow}
+      />
+
+      <ColumnEditModal
+        isOpen={editingColumn !== null}
+        onClose={() => setEditingColumn(null)}
+        columnName={editingColumn?.name || ''}
+        onSave={handleSaveColumn}
+      />
+    </div>
+  );
+};
+
 const CertificateGenerator: React.FC = () => {
   const [data, setData] = useState<CertificateData[]>([]);
   const [docxHtml, setDocxHtml] = useState<string>("");
@@ -284,6 +1063,16 @@ const CertificateGenerator: React.FC = () => {
   const certRef = useRef<HTMLDivElement>(null);
   const excelInputRef = useRef<HTMLInputElement>(null);
   
+  // UI State - sidebar collapsed by default
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
+  const [templateSearch, setTemplateSearch] = useState("");
+  const [expandedSections, setExpandedSections] = useState({
+    templates: true,
+    status: true,
+    placeholders: true,
+    columns: true
+  });
+  
   // File System Access API handle
   const [excelFileHandle, setExcelFileHandle] = useState<FileSystemFileHandle | null>(null);
   const [originalFileName, setOriginalFileName] = useState<string>("");
@@ -301,6 +1090,13 @@ const CertificateGenerator: React.FC = () => {
   const [showExcelEditor, setShowExcelEditor] = useState(false);
   const [editableData, setEditableData] = useState<CertificateData[]>([]);
   const [newRowData, setNewRowData] = useState<CertificateData>({});
+
+  const toggleSection = (section: keyof typeof expandedSections) => {
+    setExpandedSections(prev => ({
+      ...prev,
+      [section]: !prev[section]
+    }));
+  };
 
   React.useEffect(() => {
     const loadData = async () => {
@@ -1134,204 +1930,320 @@ const CertificateGenerator: React.FC = () => {
   const isReady = uploadStatus.docx && uploadStatus.excel;
 
   return (
-    <div className="flex min-h-screen bg-gradient-to-br from-purple-50 to-blue-100">
+    <div className="flex h-screen overflow-hidden bg-gradient-to-br from-purple-50 to-blue-100">
       {/* Sidebar */}
-      <div className="w-80 bg-white shadow-xl p-6 overflow-y-auto">
-        <h2 className="text-2xl font-bold text-gray-800 mb-6">
-          📁 Saved Templates
-        </h2>
+      <div className={`bg-white shadow-xl transition-all duration-300 ${
+        sidebarCollapsed ? 'w-20' : 'w-80'
+      } flex flex-col h-full overflow-hidden relative`}>
+        
+        {/* Collapse Toggle Button - stays fixed */}
+        <button
+          onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+          className="absolute -right-3 top-10 bg-white rounded-full p-1.5 shadow-md hover:shadow-lg transition border border-gray-200 z-10"
+          title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+        >
+          <ChevronLeft className={`w-4 h-4 text-gray-600 transition-transform duration-300 ${
+            sidebarCollapsed ? 'rotate-180' : ''
+          }`} />
+        </button>
 
-        {savedTemplates.length > 0 ? (
-          <div className="space-y-3 mb-8">
-            {savedTemplates.map((template) => (
-              <div
-                key={template.id}
-                className={`p-4 rounded-lg border-2 cursor-pointer transition ${
-                  selectedTemplateId === template.id
-                    ? "bg-purple-50 border-purple-500"
-                    : "bg-gray-50 border-gray-300 hover:border-purple-300"
-                }`}
-                onClick={() => handleLoadTemplate(template)}
+        {/* Sidebar Content - scrollable */}
+        <div className="flex-1 overflow-y-auto p-6">
+          {/* App Title */}
+          <div className="flex items-center gap-3 mb-6">
+            <div className="p-2 bg-purple-100 rounded-lg flex-shrink-0">
+              <FileText className="w-6 h-6 text-purple-600" />
+            </div>
+            {!sidebarCollapsed && (
+              <h2 className="text-2xl font-bold text-gray-800">📁 Certificates</h2>
+            )}
+          </div>
+
+          {/* Templates Section */}
+          <div className="mb-6">
+            {/* Section Header */}
+            <div className="flex items-center justify-between mb-3">
+              <button
+                onClick={() => toggleSection('templates')}
+                className="flex items-center gap-2 text-gray-700 hover:text-purple-600 transition"
               >
-                <div className="flex items-start justify-between">
-                  <div className="flex-1">
-                    <div className="font-semibold text-gray-800 flex items-center gap-2">
-                      <File className="w-4 h-4" />
-                      {template.name}
+                <FolderOpen className="w-5 h-5 flex-shrink-0" />
+                {!sidebarCollapsed && <span className="font-semibold">Templates</span>}
+                {!sidebarCollapsed && (
+                  <ChevronDown className={`w-4 h-4 transition-transform ${
+                    expandedSections.templates ? 'rotate-180' : ''
+                  }`} />
+                )}
+              </button>
+              {!sidebarCollapsed && (
+                <span className="text-sm text-gray-500 bg-gray-100 px-2 py-1 rounded-full">
+                  {savedTemplates.length}
+                </span>
+              )}
+            </div>
+
+            {/* Search Bar - Only show when expanded */}
+            {!sidebarCollapsed && expandedSections.templates && (
+              <div className="mb-4 relative">
+                <Search className="w-4 h-4 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder="Search templates..."
+                  value={templateSearch}
+                  onChange={(e) => setTemplateSearch(e.target.value)}
+                  className="w-full pl-9 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                />
+                {templateSearch && (
+                  <button
+                    onClick={() => setTemplateSearch("")}
+                    className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* Templates List */}
+            {!sidebarCollapsed && expandedSections.templates && (
+              <div className="space-y-3">
+                {savedTemplates.length > 0 ? (
+                  <>
+                    {/* Filtered results count */}
+                    {templateSearch && (
+                      <p className="text-xs text-gray-500 mb-2">
+                        Found {savedTemplates.filter(t => 
+                          t.name.toLowerCase().includes(templateSearch.toLowerCase())
+                        ).length} template(s)
+                      </p>
+                    )}
+                    
+                    {/* Template Grid/List */}
+                    <div className="grid grid-cols-2 gap-2">
+                      {savedTemplates
+                        .filter(t => t.name.toLowerCase().includes(templateSearch.toLowerCase()))
+                        .map((template) => (
+                          <div
+                            key={template.id}
+                            className={`group relative rounded-lg border-2 cursor-pointer transition-all hover:shadow-md ${
+                              selectedTemplateId === template.id
+                                ? "border-purple-500 bg-purple-50"
+                                : "border-gray-200 hover:border-purple-300 bg-white"
+                            }`}
+                            onClick={() => handleLoadTemplate(template)}
+                          >
+                            {/* Template Thumbnail */}
+                            <div className="aspect-[3/4] bg-gradient-to-br from-gray-50 to-gray-100 rounded-t-lg p-2 relative overflow-hidden">
+                              {/* Mini certificate preview */}
+                              <div className="text-[6px] leading-tight">
+                                <div className="font-bold truncate">{template.name}</div>
+                                <div className="border-t border-gray-300 my-1"></div>
+                                {template.placeholders.slice(0, 3).map((ph, i) => (
+                                  <div key={i} className="text-gray-600 truncate">{"{" + ph + "}"}</div>
+                                ))}
+                                {template.placeholders.length > 3 && (
+                                  <div className="text-gray-400">+{template.placeholders.length - 3}</div>
+                                )}
+                              </div>
+                              
+                              {/* Delete button overlay */}
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteTemplate(template.id);
+                                }}
+                                className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 bg-red-500 text-white rounded-full p-1 hover:bg-red-600 transition shadow-sm"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </div>
+                            
+                            {/* Template Name */}
+                            <div className="p-2 text-xs font-medium text-gray-700 truncate bg-white rounded-b-lg border-t">
+                              {template.name}
+                            </div>
+                          </div>
+                        ))}
                     </div>
-                    <div className="text-xs text-gray-500 mt-1">
-                      {template.placeholders.length} fields •{" "}
-                      {template.uploadDate}
+
+                    {/* Upload new template card */}
+                    <label className="block border-2 border-dashed border-gray-300 rounded-lg p-4 cursor-pointer hover:border-purple-500 hover:bg-purple-50 transition text-center">
+                      <Plus className="w-6 h-6 text-gray-400 mx-auto mb-1" />
+                      <span className="text-xs text-gray-600">Upload New</span>
+                      <input
+                        type="file"
+                        className="hidden"
+                        accept=".docx"
+                        onChange={handleDocxUpload}
+                      />
+                    </label>
+                  </>
+                ) : (
+                  <div className="text-center py-8">
+                    <div className="bg-gray-100 rounded-full w-16 h-16 mx-auto mb-3 flex items-center justify-center">
+                      <FileText className="w-8 h-8 text-gray-400" />
+                    </div>
+                    <p className="text-sm text-gray-600 mb-3">No templates yet</p>
+                    <label className="inline-flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg cursor-pointer hover:bg-purple-700 transition text-sm">
+                      <Upload className="w-4 h-4" />
+                      Upload First Template
+                      <input
+                        type="file"
+                        className="hidden"
+                        accept=".docx"
+                        onChange={handleDocxUpload}
+                      />
+                    </label>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Collapsed View - Icons only */}
+            {sidebarCollapsed && (
+              <div className="space-y-3 mt-4">
+                {savedTemplates.slice(0, 3).map((template) => (
+                  <div
+                    key={template.id}
+                    className={`relative rounded-lg cursor-pointer ${
+                      selectedTemplateId === template.id ? 'ring-2 ring-purple-500' : ''
+                    }`}
+                    onClick={() => handleLoadTemplate(template)}
+                    title={template.name}
+                  >
+                    <div className="aspect-square bg-gradient-to-br from-gray-50 to-gray-100 rounded-lg p-1">
+                      <FileText className="w-full h-full text-gray-600 p-1" />
                     </div>
                   </div>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDeleteTemplate(template.id);
-                    }}
-                    className="text-red-500 hover:text-red-700 p-1"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
+                ))}
+                <label className="block aspect-square border-2 border-dashed border-gray-300 rounded-lg cursor-pointer hover:border-purple-500">
+                  <Plus className="w-full h-full text-gray-400 p-2" />
+                  <input
+                    type="file"
+                    className="hidden"
+                    accept=".docx"
+                    onChange={handleDocxUpload}
+                  />
+                </label>
               </div>
-            ))}
+            )}
           </div>
-        ) : (
-          <div className="bg-gray-50 p-4 rounded-lg mb-8 text-center text-gray-500 text-sm">
-            No saved templates. Upload a DOCX to get started!
-          </div>
-        )}
 
-        <div className="border-t pt-6 mb-6"></div>
-
-        <h2 className="text-xl font-bold text-gray-800 mb-4">📊 Status</h2>
-
-        <div className="mb-8">
-          <div
-            className={`p-5 rounded-lg border-2 ${isReady ? "bg-green-50 border-green-500" : "bg-gray-50 border-gray-300"}`}
-          >
-            <div className="flex items-center gap-2 mb-3">
-              {isReady ? (
-                <Check className="w-6 h-6 text-green-600" />
-              ) : (
-                <Upload className="w-6 h-6 text-gray-400" />
+          {/* Status Section */}
+          <div className="mb-6 border-t pt-4">
+            <button
+              onClick={() => toggleSection('status')}
+              className="flex items-center gap-2 text-gray-700 hover:text-purple-600 transition w-full"
+            >
+              <Activity className="w-5 h-5 flex-shrink-0" />
+              {!sidebarCollapsed && (
+                <>
+                  <span className="font-semibold">Status</span>
+                  <ChevronDown className={`w-4 h-4 ml-auto transition-transform ${
+                    expandedSections.status ? 'rotate-180' : ''
+                  }`} />
+                </>
               )}
-              <span className="font-semibold text-lg">Files</span>
-            </div>
-            <div className="space-y-2">
-              <div className="flex items-center gap-2 text-sm">
-                {uploadStatus.docx ? (
-                  <Check className="w-4 h-4 text-green-600" />
-                ) : (
-                  <div className="w-4 h-4 border-2 border-gray-300 rounded" />
-                )}
-                <FileText className="w-4 h-4" />
-                <span>Template</span>
+            </button>
+
+            {!sidebarCollapsed && expandedSections.status && (
+              <div className="mt-3 space-y-2">
+                <div className="flex items-center gap-2 p-2 bg-gray-50 rounded-lg">
+                  <div className={`w-2 h-2 rounded-full ${uploadStatus.docx ? 'bg-green-500' : 'bg-gray-300'}`} />
+                  <FileText className="w-4 h-4 text-gray-600" />
+                  <span className="text-sm flex-1">Template</span>
+                  {uploadStatus.docx && <Check className="w-4 h-4 text-green-500" />}
+                </div>
+                <div className="flex items-center gap-2 p-2 bg-gray-50 rounded-lg">
+                  <div className={`w-2 h-2 rounded-full ${uploadStatus.excel ? 'bg-green-500' : 'bg-gray-300'}`} />
+                  <FileSpreadsheet className="w-4 h-4 text-gray-600" />
+                  <span className="text-sm flex-1">Data</span>
+                  {uploadStatus.excel && (
+                    <>
+                      <span className="text-xs text-gray-500">{data.length} rows</span>
+                      <Check className="w-4 h-4 text-green-500" />
+                    </>
+                  )}
+                </div>
               </div>
-              <div className="flex items-center gap-2 text-sm">
-                {uploadStatus.excel ? (
-                  <Check className="w-4 h-4 text-green-600" />
-                ) : (
-                  <div className="w-4 h-4 border-2 border-gray-300 rounded" />
-                )}
-                <FileSpreadsheet className="w-4 h-4" />
-                <span>Excel {uploadStatus.excel && `(${data.length})`}</span>
-                {uploadStatus.excel && (
-                  <button
-                    onClick={handleDeleteExcel}
-                    className="text-red-500 hover:text-red-700 p-1 ml-1"
-                    title="Delete Excel data"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                )}
-              </div>
-            </div>
+            )}
           </div>
+
+          {/* Placeholders Section */}
+          {placeholders.length > 0 && (
+            <div className="mb-6 border-t pt-4">
+              <button
+                onClick={() => toggleSection('placeholders')}
+                className="flex items-center gap-2 text-gray-700 hover:text-purple-600 transition w-full"
+              >
+                <Tag className="w-5 h-5 flex-shrink-0" />
+                {!sidebarCollapsed && (
+                  <>
+                    <span className="font-semibold">Placeholders</span>
+                    <span className="ml-auto text-xs bg-gray-200 px-2 py-0.5 rounded-full">
+                      {placeholders.length}
+                    </span>
+                    <ChevronDown className={`w-4 h-4 transition-transform ${
+                      expandedSections.placeholders ? 'rotate-180' : ''
+                    }`} />
+                  </>
+                )}
+              </button>
+
+              {!sidebarCollapsed && expandedSections.placeholders && (
+                <div className="mt-3 space-y-1 max-h-40 overflow-y-auto">
+                  {placeholders.map((ph) => (
+                    <div key={ph} className="flex items-center gap-2 p-1.5 bg-blue-50 rounded text-xs">
+                      <code className="text-blue-700 flex-1">{`{${ph}}`}</code>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Excel Columns Section */}
+          {excelColumns.length > 0 && (
+            <div className="mb-6 border-t pt-4">
+              <button
+                onClick={() => toggleSection('columns')}
+                className="flex items-center gap-2 text-gray-700 hover:text-purple-600 transition w-full"
+              >
+                <Grid className="w-5 h-5 flex-shrink-0" />
+                {!sidebarCollapsed && (
+                  <>
+                    <span className="font-semibold">Columns</span>
+                    <span className="ml-auto text-xs bg-gray-200 px-2 py-0.5 rounded-full">
+                      {excelColumns.length}
+                    </span>
+                    <ChevronDown className={`w-4 h-4 transition-transform ${
+                      expandedSections.columns ? 'rotate-180' : ''
+                    }`} />
+                  </>
+                )}
+              </button>
+
+              {!sidebarCollapsed && expandedSections.columns && (
+                <div className="mt-3 space-y-1 max-h-40 overflow-y-auto">
+                  {excelColumns.map((col) => (
+                    <div key={col} className="flex items-center gap-2 p-1.5 bg-green-50 rounded text-xs">
+                      <span className="text-green-700 flex-1">{col}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
-
-        {placeholders.length > 0 && (
-          <div className="mb-8">
-            <h3 className="font-bold text-gray-800 mb-3 flex items-center gap-2">
-              <AlertCircle className="w-5 h-5" />
-              Placeholders
-            </h3>
-            <div className="space-y-2">
-              {placeholders.map((ph) => (
-                <div key={ph} className="bg-blue-50 px-3 py-2 rounded text-sm">
-                  <code className="text-blue-700">{`{${ph}}`}</code>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {excelColumns.length > 0 && (
-          <div className="mb-8">
-            <h3 className="font-bold text-gray-800 mb-3 flex items-center gap-2">
-              <FileSpreadsheet className="w-5 h-5" />
-              Excel Columns
-            </h3>
-            <div className="space-y-2">
-              {excelColumns.map((col) => (
-                <div
-                  key={col}
-                  className="bg-green-50 px-3 py-2 rounded text-sm"
-                >
-                  <span className="text-green-700 font-medium">{col}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
 
-      {/* Main Content */}
-      <div className="flex-1 p-8 overflow-y-auto">
+      {/* Main Content - independently scrollable */}
+      <div className="flex-1 overflow-y-auto p-8">
         <div className="max-w-6xl mx-auto">
-          <div className="bg-white rounded-lg shadow-xl p-8 mb-8">
-            <h1 className="text-3xl font-bold text-gray-800 mb-6">
-              🎓 Certificate Generator
-            </h1>
+          {/* Upload panels removed - now starts directly with preview */}
 
-            <div className="grid grid-cols-2 gap-6">
-              <label className="flex flex-col items-center justify-center h-40 px-4 transition bg-white border-2 border-dashed rounded-lg cursor-pointer hover:border-purple-500 border-gray-300">
-                <div className="flex flex-col items-center space-y-2">
-                  <FileText className="w-10 h-10 text-gray-400" />
-                  <span className="font-medium text-gray-600">
-                    Upload DOCX Template
-                  </span>
-                  <span className="text-xs text-gray-500">
-                    {uploadStatus.docx ? "✓ Loaded" : "Will be saved"}
-                  </span>
-                </div>
-                <input
-                  type="file"
-                  className="hidden"
-                  accept=".docx"
-                  onChange={handleDocxUpload}
-                />
-              </label>
-
-              <label className="relative flex flex-col items-center justify-center h-40 px-4 transition bg-white border-2 border-dashed rounded-lg cursor-pointer hover:border-blue-500 border-gray-300">
-                {uploadStatus.excel && (
-                  <button
-                    onClick={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      handleDeleteExcel();
-                    }}
-                    className="absolute top-2 right-2 text-red-500 hover:text-red-700 p-1"
-                    title="Delete Excel data"
-                  >
-                    <Trash2 className="w-5 h-5" />
-                  </button>
-                )}
-                <div className="flex flex-col items-center space-y-2">
-                  <Upload className="w-10 h-10 text-gray-400" />
-                  <span className="font-medium text-gray-600">
-                    Upload Excel Data
-                  </span>
-                  <span className="text-xs text-gray-500">
-                    {uploadStatus.excel
-                      ? `✓ ${data.length} records saved`
-                      : "Will be saved"}
-                  </span>
-                </div>
-                <input
-                  ref={excelInputRef}
-                  type="file"
-                  className="hidden"
-                  accept=".xlsx,.xls"
-                  onChange={handleExcelUpload}
-                />
-              </label>
-            </div>
-          </div>
-
-          {isReady && (
-            <div className="bg-white rounded-lg shadow-xl p-6 mb-8">
+          {isReady ? (
+            <div className="bg-white rounded-lg shadow-xl p-6">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-xl font-semibold text-gray-800 flex items-center gap-2">
                   <Eye className="w-5 h-5" />
@@ -1490,30 +2402,27 @@ const CertificateGenerator: React.FC = () => {
                 </div>
               </div>
             </div>
-          )}
-
-          {!isReady && (
+          ) : (
             <div className="bg-white rounded-lg shadow-xl p-8">
               <h2 className="text-xl font-bold text-gray-800 mb-4">
-                📝 How to Use
+                📝 Get Started
               </h2>
               <ol className="space-y-3 text-gray-700">
                 <li className="flex gap-3">
                   <span className="font-bold text-purple-600">1.</span>
                   <span>
-                    Upload DOCX template with placeholders -{" "}
-                    <strong>saves forever</strong>
+                    Upload a DOCX template using the <strong>"+" button</strong> in the sidebar
                   </span>
                 </li>
                 <li className="flex gap-3">
                   <span className="font-bold text-purple-600">2.</span>
                   <span>
-                    Upload Excel file - <strong>re-upload each session</strong>
+                    Upload an Excel file with your data using the <strong>Upload Excel Data</strong> button above
                   </span>
                 </li>
                 <li className="flex gap-3">
                   <span className="font-bold text-purple-600">3.</span>
-                  <span>Generate and download certificates!</span>
+                  <span>Generate and download your certificates!</span>
                 </li>
               </ol>
             </div>
@@ -1838,272 +2747,26 @@ const CertificateGenerator: React.FC = () => {
       )}
 
       {/* Excel Editor Modal */}
-      {showExcelEditor && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 w-full max-w-6xl max-h-[90vh] overflow-y-auto shadow-2xl">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-xl font-bold">Edit Excel Data</h3>
-              <button
-                onClick={() => setShowExcelEditor(false)}
-                className="text-gray-500 hover:text-gray-700"
-              >
-                ✕
-              </button>
-            </div>
+      <ExcelEditorModal
+        isOpen={showExcelEditor}
+        onClose={() => setShowExcelEditor(false)}
+        data={editableData}
+        columns={excelColumns}
+        fileName={originalFileName}
+        onSave={(newData, newColumns) => {
+          setData(newData);
+          setEditableData(newData);
+          setExcelColumns(newColumns);
+          saveExcelData(newData, newColumns);
+        }}
+      />
 
-            {/* File info with permission button */}
-            <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 text-blue-700">
-                  <FileSpreadsheet className="w-5 h-5" />
-                  <span className="font-medium">Editing: {originalFileName}</span>
-                </div>
-                
-                {/* Add this button to request write permission */}
-                {!excelFileHandle && 'showOpenFilePicker' in window && (
-                  <button
-                    onClick={handleRequestWritePermission}
-                    className="flex items-center gap-2 px-3 py-1 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700"
-                  >
-                    <Save className="w-4 h-4" />
-                    Enable Direct Save
-                  </button>
-                )}
-              </div>
-              
-              {excelFileHandle ? (
-                <p className="text-xs text-green-600 mt-1 flex items-center gap-1">
-                  <Check className="w-3 h-3" />
-                  Write access granted - changes will save directly to original file
-                </p>
-              ) : (
-                <p className="text-xs text-gray-500 mt-1">
-                  Click "Enable Direct Save" to save changes directly to your original file
-                </p>
-              )}
-            </div>
-
-            <div className="overflow-x-auto mb-4">
-              <table className="min-w-full border-collapse border border-gray-300">
-                <thead className="bg-gray-100 sticky top-0">
-                  <tr>
-                    {excelColumns.map((col) => (
-                      <th key={col} className="border border-gray-300 px-4 py-2 text-left text-sm font-semibold">
-                        {col}
-                        <button
-                          onClick={() => {
-                            const newCol = prompt("Enter new column name:");
-                            if (newCol && !excelColumns.includes(newCol)) {
-                              const updatedColumns = [...excelColumns, newCol];
-                              const updatedData = editableData.map(row => ({
-                                ...row,
-                                [newCol]: ""
-                              }));
-                              setExcelColumns(updatedColumns);
-                              setEditableData(updatedData);
-                            }
-                          }}
-                          className="ml-2 text-green-600 hover:text-green-800"
-                          title="Add column"
-                        >
-                          +
-                        </button>
-                      </th>
-                    ))}
-                    <th className="border border-gray-300 px-4 py-2 text-center">
-                      Actions
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {editableData.map((row, rowIndex) => (
-                    <tr key={rowIndex} className="hover:bg-gray-50">
-                      {excelColumns.map((col) => (
-                        <td key={col} className="border border-gray-300 px-4 py-2">
-                          <input
-                            type="text"
-                            value={row[col]?.toString() || ''}
-                            onChange={(e) => {
-                              const updatedData = [...editableData];
-                              updatedData[rowIndex] = {
-                                ...updatedData[rowIndex],
-                                [col]: e.target.value
-                              };
-                              setEditableData(updatedData);
-                            }}
-                            className="w-full px-2 py-1 border rounded focus:outline-none focus:ring-2 focus:ring-purple-500"
-                          />
-                        </td>
-                      ))}
-                      <td className="border border-gray-300 px-4 py-2 text-center">
-                        <button
-                          onClick={() => {
-                            const updatedData = editableData.filter((_, i) => i !== rowIndex);
-                            setEditableData(updatedData);
-                          }}
-                          className="text-red-600 hover:text-red-800 mx-1"
-                          title="Delete row"
-                        >
-                          <Trash2 className="w-4 h-4 inline" />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                  
-                  <tr className="bg-blue-50">
-                    {excelColumns.map((col) => (
-                      <td key={col} className="border border-gray-300 px-4 py-2">
-                        <input
-                          type="text"
-                          placeholder={`Enter ${col}`}
-                          value={newRowData[col]?.toString() || ''}
-                          onChange={(e) => {
-                            setNewRowData({
-                              ...newRowData,
-                              [col]: e.target.value
-                            });
-                          }}
-                          className="w-full px-2 py-1 border rounded focus:outline-none focus:ring-2 focus:ring-green-500"
-                        />
-                      </td>
-                    ))}
-                    <td className="border border-gray-300 px-4 py-2 text-center">
-                      <button
-                        onClick={() => {
-                          if (Object.keys(newRowData).length > 0) {
-                            setEditableData([...editableData, newRowData]);
-                            setNewRowData({});
-                          }
-                        }}
-                        className="text-green-600 hover:text-green-800"
-                        title="Add row"
-                      >
-                        +
-                      </button>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4 mb-4">
-              <div>
-                <h4 className="font-semibold mb-2">Bulk Add Records</h4>
-                <textarea
-                  placeholder="Paste CSV data here (one row per line, comma-separated)"
-                  className="w-full h-24 p-2 border rounded focus:outline-none focus:ring-2 focus:ring-purple-500"
-                  onChange={(e) => {
-                    const csvText = e.target.value;
-                    if (csvText.trim()) {
-                      const rows = csvText.split('\n');
-                      const newRows = rows.map(row => {
-                        const values = row.split(',').map(v => v.trim());
-                        const newRow: CertificateData = {};
-                        excelColumns.forEach((col, index) => {
-                          if (values[index]) {
-                            newRow[col] = values[index];
-                          }
-                        });
-                        return newRow;
-                      }).filter(row => Object.keys(row).length > 0);
-                      
-                      setEditableData([...editableData, ...newRows]);
-                    }
-                  }}
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  Example: John,Doe,john@email.com,2024-01-01
-                </p>
-              </div>
-              
-              <div>
-                <h4 className="font-semibold mb-2">Import from File</h4>
-                <label className="flex items-center justify-center h-24 px-4 border-2 border-dashed border-purple-300 rounded-lg cursor-pointer hover:bg-purple-50">
-                  <div className="text-center">
-                    <Upload className="w-6 h-6 text-purple-600 mx-auto mb-1" />
-                    <span className="text-sm text-purple-600">Click to upload CSV/Excel</span>
-                  </div>
-                  <input
-                    type="file"
-                    className="hidden"
-                    accept=".csv,.xlsx,.xls"
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) {
-                        const reader = new FileReader();
-                        reader.onload = (evt) => {
-                          try {
-                            const bstr = evt.target?.result;
-                            const wb = XLSX.read(bstr, { type: "binary" });
-                            const wsname = wb.SheetNames[0];
-                            const ws = wb.Sheets[wsname];
-                            const jsonData = XLSX.utils.sheet_to_json(ws) as CertificateData[];
-                            
-                            if (jsonData.length > 0) {
-                              const processedData = processExcelData(jsonData);
-                              setEditableData([...editableData, ...processedData]);
-                            }
-                          } catch (error) {
-                            console.error("Error importing file:", error);
-                            alert("Error importing file. Please check the format.");
-                          }
-                        };
-                        reader.readAsBinaryString(file);
-                      }
-                    }}
-                  />
-                </label>
-              </div>
-            </div>
-
-            {/* Modal Actions */}
-            <div className="flex gap-3 justify-end mt-6">
-              {excelFileHandle ? (
-                <>
-                  <button
-                    onClick={handleSaveExcelChanges}
-                    className="flex items-center gap-2 px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
-                  >
-                    <Save className="w-4 h-4" />
-                    Save to Original File
-                  </button>
-                  <button
-                    onClick={() => {
-                      if (confirm("Discard all changes?")) {
-                        setEditableData(data);
-                        setNewRowData({});
-                        setShowExcelEditor(false);
-                      }
-                    }}
-                    className="px-6 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
-                  >
-                    Cancel
-                  </button>
-                </>
-              ) : (
-                <>
-                  <button
-                    onClick={handleSaveExcelChanges}
-                    className="flex items-center gap-2 px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-                  >
-                    <Download className="w-4 h-4" />
-                    Download Updated File
-                  </button>
-                  <button
-                    onClick={() => {
-                      if (confirm("Discard all changes?")) {
-                        setEditableData(data);
-                        setNewRowData({});
-                        setShowExcelEditor(false);
-                      }
-                    }}
-                    className="px-6 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300"
-                  >
-                    Cancel
-                  </button>
-                </>
-              )}
-            </div>
+      {/* File info with permission button - only show when needed */}
+      {excelFileHandle && (
+        <div className="fixed bottom-4 right-4 bg-green-50 border border-green-200 rounded-lg p-3 shadow-lg z-40">
+          <div className="flex items-center gap-2 text-green-700">
+            <Check className="w-4 h-4" />
+            <span className="text-sm">Write access: {originalFileName}</span>
           </div>
         </div>
       )}
